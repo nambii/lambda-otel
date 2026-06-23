@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".",
+    "baseUrl": ".",
+    "paths": {
+      "@yourscope/lambda-otel": ["./src/index.ts"]
+    }
+  },
+  "include": ["src/**/*.ts", "examples/**/*.ts"]
+}

@@ -1,0 +1,40 @@
+/**
+ * Project-specific preload for a Koa BFF.
+ *
+ * Reference it from your Lambda config:
+ *   NODE_OPTIONS="--require ./dist/instrument.js"   (CJS)
+ *   NODE_OPTIONS="--import ./dist/instrument.js"     (ESM)
+ *
+ * Why a preload and not the handler module: instrumentation patches `koa` and
+ * `undici` at require-time, so it must run BEFORE those modules are imported.
+ * The package's built-in `@yourscope/lambda-otel/register` only loads the core
+ * set (http, aws-sdk, pg); this adds the API-handler instrumentations on top.
+ *
+ * Bundling note: with esbuild/SST, mark these external so they can be patched —
+ *   external: ['@opentelemetry/*', '@yourscope/lambda-otel', 'pg', 'koa', '@koa/router']
+ */
+import { initObservability, defaultInstrumentations } from '@yourscope/lambda-otel';
+import { KoaInstrumentation, KoaLayerType } from '@opentelemetry/instrumentation-koa';
+import { UndiciInstrumentation } from '@opentelemetry/instrumentation-undici';
+import { PinoInstrumentation } from '@opentelemetry/instrumentation-pino';
+// Winston is the same shape:
+// import { WinstonInstrumentation } from '@opentelemetry/instrumentation-winston';
+
+initObservability({
+  environment: process.env.DEPLOYMENT_ENV,
+  // Set logs:true to also forward log records over OTLP to the collector.
+  // Leave it off to keep logs in CloudWatch and just correlate by trace_id.
+  // logs: true,
+  instrumentations: [
+    ...defaultInstrumentations(), // http + aws-sdk + pg
+    new KoaInstrumentation({
+      // Generic per-middleware spans are noisy; keep router (route-name) spans,
+      // drop the rest. Remove this to see every middleware layer.
+      ignoreLayersType: [KoaLayerType.MIDDLEWARE],
+    }),
+    new UndiciInstrumentation(), // outbound global fetch() — not covered by http
+    // Injects trace_id / span_id / trace_flags into every pino log line so logs
+    // link to the active span. Add WinstonInstrumentation here if you use winston.
+    new PinoInstrumentation(),
+  ],
+});

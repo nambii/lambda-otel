@@ -11,7 +11,7 @@ import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import Koa from 'koa';
 import Router from '@koa/router';
 import serverless from 'serverless-http';
-import { withObservability, metrics, trace } from '@yourscope/lambda-otel';
+import { withObservability, metrics, trace } from 'lambda-otel';
 
 const app = new Koa();
 const router = new Router();

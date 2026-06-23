@@ -5,7 +5,7 @@
     "rootDir": ".",
     "baseUrl": ".",
     "paths": {
-      "@yourscope/lambda-otel": ["./src/index.ts"]
+      "lambda-otel": ["./src/index.ts"]
     }
   },
   "include": ["src/**/*.ts", "examples/**/*.ts"]

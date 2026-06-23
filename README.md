@@ -1,4 +1,4 @@
-# @yourscope/lambda-otel
+# lambda-otel
 
 Vendor-neutral OpenTelemetry **traces + metrics** for AWS Lambda (Node.js).
 
@@ -20,11 +20,19 @@ republish.
   (see the caveat below).
 - **Cold-start, duration, and error metrics** plus a root span with inbound
   context propagation, out of the box.
+- **Trigger-aware enrichment.** The wrapper inspects the event and applies the
+  OTel FaaS/messaging semantic conventions automatically: `faas.trigger`, the
+  right span kind (`CONSUMER` for SQS/SNS/Kinesis, `SERVER` for HTTP), `http.route`
+  for API Gateway/ALB, `messaging.*` for queues, `faas.document.*` for
+  S3/DynamoDB, `cloud.resource_id`/`cloud.account.id` from the invoke context,
+  and **one span link per message** for batches (extracted from each record's
+  `traceparent`). All of it is gated behind `experimentalAttributes` (on by
+  default) since the FaaS semconv is still "Development" stability upstream.
 
 ## Install
 
 ```bash
-npm install @yourscope/lambda-otel @opentelemetry/api
+npm install lambda-otel @opentelemetry/api
 ```
 
 ## Usage
@@ -34,7 +42,7 @@ before they're required), then wrap your handler:
 
 ```ts
 // handler.ts
-import { withObservability, metrics } from '@yourscope/lambda-otel';
+import { withObservability, metrics } from 'lambda-otel';
 
 export const handler = withObservability(async (event) => {
   metrics.count('orders.created', 1, { currency: 'AUD' });
@@ -45,14 +53,14 @@ export const handler = withObservability(async (event) => {
 
 ```jsonc
 // Lambda env
-"NODE_OPTIONS": "--require @yourscope/lambda-otel/register"
+"NODE_OPTIONS": "--require lambda-otel/register"
 ```
 
 If you can't use a preload, call `initObservability()` yourself as the very
 first thing your entrypoint does (before importing instrumented libraries):
 
 ```ts
-import { initObservability, withObservability } from '@yourscope/lambda-otel';
+import { initObservability, withObservability } from 'lambda-otel';
 initObservability({ environment: 'prod' });
 ```
 
@@ -85,13 +93,13 @@ none for `http`, `@aws-sdk/*`, or `pg`. Two fixes:
    ```ts
    nodejs: {
      esbuild: {
-       external: ['@opentelemetry/*', '@yourscope/lambda-otel', 'pg'],
+       external: ['@opentelemetry/*', 'lambda-otel', 'pg'],
      },
    },
    // @aws-sdk/* is provided by the Lambda runtime and already external.
    ```
 
-   Combine with `NODE_OPTIONS=--require @yourscope/lambda-otel/register`.
+   Combine with `NODE_OPTIONS=--require lambda-otel/register`.
 
 2. **Or** attach a collector layer that also ships the language SDK wrapper and
    let it own instrumentation; use this package purely for the metrics facade and
@@ -112,9 +120,17 @@ ESM functions use `--import` instead of `--require`.
 | `instrumentations`| —                               | http, aws-sdk, pg        |
 | `debug`           | `OTEL_DEBUG=true`               | `false`                  |
 
-Emitted automatically: `faas.coldstarts`, `faas.errors`,
-`faas.invoke_duration_ms`, plus a `SERVER` root span with `faas.coldstart` and
-`faas.invocation_id`.
+Emitted automatically: metrics `faas.coldstarts`, `faas.invocations`,
+`faas.errors`, `faas.invoke_duration` (histogram, seconds), and
+`faas.init_duration` (histogram, seconds — recorded on cold start from
+`process.uptime()`); plus a root span carrying `faas.coldstart`,
+`faas.invocation_id`, and the trigger-derived attributes described above.
+
+> The richer FaaS metrics that need the Lambda Telemetry API — `faas.mem_usage`,
+> `faas.cpu_usage`, `faas.net_io`, `faas.timeouts`, and the platform's *billed*
+> duration — cannot be measured from inside the handler. They require a Lambda
+> extension (e.g. the OTel Collector layer) and are out of scope for this
+> in-process package.
 
 ## Custom carrier extraction (SQS / EventBridge)
 
@@ -130,6 +146,34 @@ withObservability(handler, {
 });
 ```
 
+`extractCarrier` sets the root span's **parent**, so it's a single context — use
+it for one-context sources (a single SQS message, an HTTP request). For SQS/SNS
+**batches**, the wrapper already adds one **span link per record** automatically
+(pulled from each message's `traceparent`), which is the spec-correct way to tie a
+batch back to many producers. You don't need `extractCarrier` for the links.
+
+## Capturing payloads and per-invocation context (hooks)
+
+Event/response capture is never automatic — that's deliberate, so you own the PII
+and cardinality. Use `requestHook`/`responseHook` to add exactly what you want:
+
+```ts
+withObservability(handler, {
+  requestHook: (span, { event }) => {
+    // Record sizes, not bodies, by default. Redact before you attach anything.
+    span.setAttribute('app.batch_size', (event as any)?.Records?.length ?? 1);
+  },
+  responseHook: (span, { res, err }) => {
+    if ((res as any)?.statusCode) {
+      span.setAttribute('http.response.status_code', (res as any).statusCode);
+    }
+  },
+});
+```
+
+Hooks run inside the root span and are best-effort: a throwing hook is logged via
+`diag` and never breaks your handler.
+
 ## Optional instrumentations
 
 The core install stays lean (`http` + `aws-sdk` + `pg`). Add framework-specific
@@ -140,7 +184,7 @@ npm install @opentelemetry/instrumentation-koa @opentelemetry/instrumentation-un
 ```
 
 ```ts
-import { defaultInstrumentations, initObservability } from '@yourscope/lambda-otel';
+import { defaultInstrumentations, initObservability } from 'lambda-otel';
 import { KoaInstrumentation } from '@opentelemetry/instrumentation-koa';
 import { UndiciInstrumentation } from '@opentelemetry/instrumentation-undici';
 
@@ -182,6 +226,52 @@ initObservability({
   instrumentations: [...defaultInstrumentations(), new PinoInstrumentation()],
 });
 ```
+
+## Platform metrics — max memory, billed/restore duration, timeouts
+
+Some metrics aren't measurable from inside the handler — max memory used, billed
+duration, SnapStart restore duration, and timeouts only exist in the Lambda
+**Telemetry API**'s `platform.report` event, which is delivered to an extension,
+not to your code. There are two ways to get them, and they're complementary.
+
+### Recommended for production: the OTel Collector layer
+
+Attach the OpenTelemetry Collector Lambda layer and enable its
+`telemetryapireceiver`. The Collector registers as a proper external extension
+(so it gets `SHUTDOWN` and never drops the final report) and converts platform
+telemetry into OTel spans/metrics — no code change, fully vendor-neutral, and
+nothing for this package to maintain. This is the robust path.
+
+### Lightweight / dev: the in-process extension (experimental)
+
+If you'd rather not attach a layer, set `telemetryMetrics: true`. The package
+registers an **internal** extension from within the Node process, subscribes to
+the platform stream, and emits:
+
+| Metric | Unit | Source |
+|---|---|---|
+| `faas.mem_usage` | bytes | `maxMemoryUsedMB` |
+| `faas.timeouts` | count | report `status === 'timeout'` |
+| `aws.lambda.billed_duration` | seconds | `billedDurationMs` |
+| `aws.lambda.restore_duration` | seconds | SnapStart `restoreDurationMs` |
+
+```ts
+initObservability({ telemetryMetrics: true }); // requires metrics enabled
+```
+
+Know the trade-offs before using this in production:
+
+- **One-invocation lag.** The `platform.report` for invocation N arrives async,
+  usually during invocation N+1, so these metrics trail real time slightly.
+- **No `SHUTDOWN`.** Internal extensions don't get the shutdown event, so the
+  last report before a sandbox freeze/reap can be lost.
+- **No `faas.cpu_usage` / `faas.net_io`.** Those aren't in the Lambda report at
+  all — only CloudWatch Lambda Insights exposes them, via a separate mechanism.
+- It adds a small cold-start cost and is best-effort: if registration fails it
+  silently disables itself and never affects your handler.
+
+`faas.init_duration` is always emitted by the handler wrapper (approximated from
+`process.uptime()` on cold start), independent of this setting.
 
 ## Examples
 

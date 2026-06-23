@@ -1,7 +1,7 @@
 import { type Attributes, metrics as otelMetrics } from '@opentelemetry/api';
 import type { Counter, Histogram, Gauge } from '@opentelemetry/api';
 
-const METER_NAME = '@yourscope/lambda-otel';
+const METER_NAME = 'lambda-otel';
 
 const counters = new Map<string, Counter>();
 const histograms = new Map<string, Histogram>();

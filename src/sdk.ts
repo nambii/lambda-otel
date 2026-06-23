@@ -20,6 +20,7 @@ import { OTLPLogExporter } from '@opentelemetry/exporter-logs-otlp-http';
 
 import { buildResource } from './resource';
 import { defaultInstrumentations } from './instrumentations';
+import { startTelemetryExtension } from './telemetry-api';
 import type { ObservabilityConfig } from './types';
 
 let tracerProvider: NodeTracerProvider | undefined;
@@ -93,6 +94,14 @@ export function initObservability(config: ObservabilityConfig = {}): void {
     tracerProvider,
     meterProvider,
   });
+
+  // ---- Lambda Telemetry API (experimental, opt-in) ----
+  // Stands up an internal extension to capture platform metrics (max memory,
+  // billed/restore duration, timeouts). Requires metrics to be enabled and a
+  // real Lambda runtime. Fire-and-forget: best-effort, never blocks init.
+  if (config.telemetryMetrics && config.metrics !== false) {
+    void startTelemetryExtension({ listenerPort: config.telemetryListenerPort });
+  }
 }
 
 /**

@@ -1,5 +1,17 @@
 export { initObservability, flush, shutdown, isInitialized } from './sdk';
-export { withObservability, type WrapOptions } from './handler';
+export {
+  withObservability,
+  type WrapOptions,
+  type RequestHook,
+  type ResponseHook,
+} from './handler';
+export { detectTrigger, type TriggerInfo, type FaasTriggerType } from './triggers';
+export {
+  startTelemetryExtension,
+  ingestTelemetryEvent,
+  isTelemetryExtensionActive,
+  type TelemetryExtensionOptions,
+} from './telemetry-api';
 export { metrics } from './metrics';
 export { defaultInstrumentations } from './instrumentations';
 export type { ObservabilityConfig } from './types';

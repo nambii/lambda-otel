@@ -1,5 +1,5 @@
 {
-  "name": "@yourscope/lambda-otel",
+  "name": "lambda-otel",
   "version": "0.1.0",
   "description": "Vendor-neutral OpenTelemetry traces + metrics for AWS Lambda. Exports OTLP; the collector decides the backend.",
   "license": "MIT",

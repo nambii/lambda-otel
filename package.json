@@ -1,6 +1,6 @@
 {
   "name": "lambda-otel",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Vendor-neutral OpenTelemetry traces + metrics for AWS Lambda. Exports OTLP; the collector decides the backend.",
   "license": "MIT",
   "author": "Ebin Joshy Nambiaparambil (https://github.com/nambii)",

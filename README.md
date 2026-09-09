@@ -29,6 +29,33 @@ republish.
   `traceparent`). All of it is gated behind `experimentalAttributes` (on by
   default) since the FaaS semconv is still "Development" stability upstream.
 
+## Quick start (integration checklist)
+
+Do these in order. Each step is expanded in its own section below.
+
+1. **Install** — `npm install lambda-otel @opentelemetry/api`.
+2. **Preload** — set the Lambda env var `NODE_OPTIONS=--require lambda-otel/register`
+   (`--import` for ESM). This initializes the SDK *before* your handler module
+   loads, so `http`, `@aws-sdk/*`, and `pg` get patched. If you need extra
+   instrumentations (Koa, pino, undici…), preload your own file instead — see
+   [`examples/instrument.ts`](./examples/instrument.ts).
+3. **Wrap the handler** — `export const handler = withObservability(async (event, context) => { ... })`.
+   Wrap outermost (outside Middy or any other wrapper).
+4. **Point at a collector** — leave `OTEL_EXPORTER_OTLP_ENDPOINT` unset to use a
+   sidecar layer on `http://localhost:4318`, or set it to a remote collector /
+   vendor OTLP endpoint. Set `OTEL_SERVICE_NAME` and `DEPLOYMENT_ENV`.
+5. **If you bundle with esbuild** (SST, CDK `NodejsFunction`, serverless-esbuild,
+   SAM esbuild): externalize `@opentelemetry/*`, `lambda-otel`, and every
+   instrumented library so they resolve at runtime — see the bundler matrix below.
+   Skipping this is the #1 cause of "I only see the root span".
+6. **Add custom metrics / spans** where useful — `metrics.count(...)`,
+   `metrics.record(...)`, or `trace.getTracer('app').startActiveSpan(...)`.
+7. **Verify** — invoke once with `OTEL_DEBUG=true` and confirm the collector
+   receives a root span, child spans for outbound calls, and `faas.*` metrics.
+   See *Local development* and *Troubleshooting* below.
+
+Minimal handler with nothing else: [`examples/basic-handler.ts`](./examples/basic-handler.ts).
+
 ## Install
 
 ```bash
@@ -101,6 +128,26 @@ none for `http`, `@aws-sdk/*`, or `pg`. Two fixes:
 
    Combine with `NODE_OPTIONS=--require lambda-otel/register`.
 
+   The same idea in other toolchains. The list to externalize is always:
+   `@opentelemetry/*`, `lambda-otel`, plus every library you want traced that
+   isn't provided by the runtime (`pg`, `koa`, `pino`, …). `@aws-sdk/*` ships
+   with the Node runtime and is already external. Externalized packages must
+   still be present in `node_modules` at runtime, so use the "install" knob
+   where the toolchain has one.
+
+   | Toolchain | Where |
+   |---|---|
+   | SST v2 | `nodejs.esbuild.external: [...]` + `nodejs.install: ['lambda-otel', 'pg']` |
+   | SST v3 (Ion) | `nodejs: { esbuild: { external: [...] }, install: ['lambda-otel', 'pg'] }` |
+   | CDK `NodejsFunction` | `bundling: { externalModules: ['@aws-sdk/*', ...], nodeModules: ['lambda-otel', 'pg', ...] }` |
+   | Serverless Framework + `serverless-esbuild` | `custom.esbuild.external: [...]` and `custom.esbuild.exclude: ['@aws-sdk/*']` |
+   | SAM (`BuildMethod: esbuild`) | `Metadata.BuildProperties.External: [...]` |
+   | Plain `esbuild` CLI | `--external:@opentelemetry/* --external:lambda-otel --external:pg` |
+
+   If you cannot externalize (single-file artifact required), you keep the root
+   span, `faas.*` metrics, custom metrics, and manual spans — only auto-instrumented
+   child spans are lost.
+
 2. **Or** attach a collector layer that also ships the language SDK wrapper and
    let it own instrumentation; use this package purely for the metrics facade and
    flush-correct handler wrapper.
@@ -119,6 +166,53 @@ ESM functions use `--import` instead of `--require`.
 | `otlpEndpoint`    | `OTEL_EXPORTER_OTLP_ENDPOINT`   | `http://localhost:4318`  |
 | `instrumentations`| —                               | http, aws-sdk, pg        |
 | `debug`           | `OTEL_DEBUG=true`               | `false`                  |
+
+### Custom metrics API
+
+`metrics` is a facade over the OTel meter; instruments are created lazily and
+cached by name, so call it from anywhere without holding references.
+
+| Call | Instrument | Use for |
+|---|---|---|
+| `metrics.count(name, value = 1, attrs?)` | Counter (monotonic) | events: orders created, retries, cache misses |
+| `metrics.record(name, value, attrs?)` | Histogram | distributions: latency, payload size, batch size |
+| `metrics.gauge(name, value, attrs?)` | Gauge | point-in-time values: queue depth, pool size |
+
+```ts
+metrics.count('orders.created', 1, { currency: 'AUD' });
+metrics.record('fx.quote_latency_ms', 42, { provider: 'xe' });
+metrics.gauge('worker.queue_depth', 17);
+```
+
+Naming: dotted lowercase (`domain.thing`), unit in the name if not obvious
+(`_ms`, `_bytes`). Attributes become dimensions/tags on the backend, so keep
+cardinality low (no user IDs, request IDs, timestamps).
+
+### Sampling
+
+Standard OTel env vars are honored (verified against the installed package):
+
+```
+OTEL_TRACES_SAMPLER=parentbased_traceidratio
+OTEL_TRACES_SAMPLER_ARG=0.1     # keep 10% of new traces; always follow an inbound sampled parent
+```
+
+Metrics are never sampled.
+
+### Flush cost and Lambda timeouts
+
+Every invocation ends with a synchronous OTLP export (`finally` block). With a
+sidecar collector on localhost this is single-digit milliseconds; against a
+remote endpoint it is a real network round-trip added to billed duration. The
+exporter timeout is not tied to `context.getRemainingTimeInMillis()`, so keep it
+well below your function timeout:
+
+```
+OTEL_EXPORTER_OTLP_TIMEOUT=2000   # ms, default 10000
+```
+
+A flush that fails or times out is logged and swallowed — it never changes the
+handler's result.
 
 Emitted automatically: metrics `faas.coldstarts`, `faas.invocations`,
 `faas.errors`, `faas.invoke_duration` (histogram, seconds), and
@@ -173,6 +267,25 @@ withObservability(handler, {
 
 Hooks run inside the root span and are best-effort: a throwing hook is logged via
 `diag` and never breaks your handler.
+
+## Using with Middy (or any other wrapper)
+
+`withObservability` must be the **outermost** wrapper so the root span covers
+every middleware and the flush runs after all of them:
+
+```ts
+import middy from '@middy/core';
+import httpJsonBodyParser from '@middy/http-json-body-parser';
+import { withObservability } from 'lambda-otel';
+
+const base = async (event: any) => ({ statusCode: 200, body: JSON.stringify(event.body) });
+
+export const handler = withObservability(
+  middy(base).use(httpJsonBodyParser()),
+);
+```
+
+The same applies to `serverless-http`, Powertools' `injectLambdaContext`, etc.
 
 ## Optional instrumentations
 
@@ -277,6 +390,10 @@ Know the trade-offs before using this in production:
 
 See [`examples/`](./examples):
 
+- `basic-handler.ts` — the smallest useful setup: preload + wrap + one custom
+  metric + one manual span. Start here.
+- `eventbridge-cron.ts` — a scheduled (timer) function with a work-loop span and
+  a gauge; shows what `withObservability` sets for non-HTTP triggers.
 - `instrument.ts` — a project preload adding Koa + Undici on top of the core set.
 - `api-handler.ts` — a Koa BFF on Lambda, with a business-operation span and a
   custom metric.
@@ -305,17 +422,121 @@ OTEL_EXPORTER_OTLP_TRACES_HEADERS=x-sentry-auth=sentry sentry_key=<public-key>
 OTEL_EXPORTER_OTLP_LOGS_HEADERS=x-sentry-auth=sentry sentry_key=<public-key>
 ```
 
-**Datadog** — attach the Datadog Lambda Extension (`DD_API_KEY`, `DD_SITE`) and
-enable its OTLP receiver (`DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT=localhost:4318`);
-the default localhost export reaches it. Traces and logs flow this way, but the
-extension does **not** accept custom metrics over OTLP — route those via DogStatsD
-or use a collector built with the `datadog` exporter for the full set.
+**Datadog** — two working setups. The package code is identical in both; only
+the layer and env differ.
+
+*A. Datadog Lambda Extension (traces + logs, no OTLP metrics).* Least setup.
+
+1. Attach the extension layer:
+   `arn:aws:lambda:<region>:464622532012:layer:Datadog-Extension:<version>`
+   (`Datadog-Extension-ARM` for arm64).
+2. Function env:
+   ```
+   DD_API_KEY=<key>                       # or DD_API_KEY_SECRET_ARN
+   DD_SITE=datadoghq.com                  # datadoghq.eu, us5.datadoghq.com, ...
+   DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT=localhost:4318
+   DD_ENV=prod
+   DD_SERVICE=my-fn
+   OTEL_SERVICE_NAME=my-fn
+   NODE_OPTIONS=--require lambda-otel/register
+   ```
+   Leave `OTEL_EXPORTER_OTLP_ENDPOINT` unset; the default `localhost:4318`
+   reaches the extension.
+3. The extension rejects OTLP **metrics**. The package tolerates this (flush is
+   best-effort), but every invoke would make one failing POST and log a warning,
+   so disable them: `initObservability({ metrics: false })` in your own preload.
+   The extension emits its own `aws.lambda.enhanced.*` cold-start/duration/error
+   metrics; for custom metrics use DogStatsD or Datadog's `sendDistributionMetric`.
+
+*B. OpenTelemetry Collector with the `datadog` exporter (traces + metrics + logs).*
+Use this when custom metrics matter.
+
+1. Run a collector build that includes `datadogexporter` (`otelcol-contrib`;
+   the stripped `opentelemetry-lambda` layer does not). Either a custom Lambda
+   layer or a central gateway on ECS/Fargate.
+2. Collector config:
+   ```yaml
+   receivers:
+     otlp:
+       protocols:
+         http:
+           endpoint: 0.0.0.0:4318
+   processors:
+     batch:
+       timeout: 1s
+   exporters:
+     datadog:
+       api:
+         key: ${env:DD_API_KEY}
+         site: datadoghq.com
+   service:
+     pipelines:
+       traces:  { receivers: [otlp], processors: [batch], exporters: [datadog] }
+       metrics: { receivers: [otlp], processors: [batch], exporters: [datadog] }
+       logs:    { receivers: [otlp], processors: [batch], exporters: [datadog] }
+   ```
+3. Function env:
+   ```
+   OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318      # layer; or http://collector.internal:4318 for a gateway
+   OTEL_SERVICE_NAME=my-fn
+   DEPLOYMENT_ENV=prod
+   NODE_OPTIONS=--require lambda-otel/register
+   ```
+   Datadog maps `service.name` → `service` and `deployment.environment.name` → `env`.
+
+*Hybrid:* traces to the extension, metrics to a collector, via per-signal env
+vars (`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`).
+This only works when `otlpEndpoint` is **not** passed in code — a code value
+overrides every env var.
 
 | Backend | Traces | Metrics | Logs |
 |---|---|---|---|
 | Grafana Cloud | ✓ | ✓ | ✓ |
 | Sentry | ✓ | — | ✓ (beta) |
 | Datadog | ✓ | not via extension OTLP | ✓ |
+
+## Local development
+
+Fastest way to see what the package emits without any backend: run a collector
+that prints to stdout and point the handler at it.
+
+```bash
+docker run --rm -p 4318:4318 -v $PWD/otel-local.yaml:/etc/otelcol/config.yaml \
+  otel/opentelemetry-collector-contrib:latest --config /etc/otelcol/config.yaml
+```
+
+```yaml
+# otel-local.yaml
+receivers:
+  otlp: { protocols: { http: { endpoint: 0.0.0.0:4318 } } }
+exporters:
+  debug: { verbosity: detailed }
+service:
+  pipelines:
+    traces:  { receivers: [otlp], exporters: [debug] }
+    metrics: { receivers: [otlp], exporters: [debug] }
+```
+
+Then invoke your handler locally (SAM/SST dev, or a plain script that calls it)
+with `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 OTEL_DEBUG=true`. A GUI
+alternative is [otel-desktop-viewer](https://github.com/CtrlSpice/otel-desktop-viewer)
+(listens on the same port).
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Root span only; no `http` / `pg` / AWS SDK child spans | Libraries were imported before the SDK initialized, or esbuild inlined them | Use `NODE_OPTIONS=--require lambda-otel/register` (or call `initObservability()` first thing); externalize packages per the bundler matrix |
+| No outbound `fetch()` spans | `instrumentation-http` doesn't cover undici/fetch | Add `@opentelemetry/instrumentation-undici` |
+| Nothing arrives at all | Wrong endpoint / port, or flush not running | Check `OTEL_EXPORTER_OTLP_ENDPOINT` (base URL, no `/v1/...`); confirm the handler is wrapped; set `OTEL_DEBUG=true` and read the exporter logs |
+| Warning `lambda-otel: flush failed` every invoke, traces fine | Endpoint rejects one signal (e.g. Datadog extension rejects metrics) | `initObservability({ metrics: false })`, or route that signal elsewhere with per-signal env vars |
+| Duplicate `sdk-trace-base` / type errors about `Resource` | Mixed OTel package generations in your project | Align versions with the table below; keep `@opentelemetry/api` at `^1.9` |
+| Handler slower by ~exporter timeout | Remote collector unreachable, flush waits for timeout | Lower `OTEL_EXPORTER_OTLP_TIMEOUT`, or use a sidecar layer |
+| Inbound trace not linked (new trace per request) | No `traceparent` in `event.headers`, or non-HTTP source | Confirm the caller propagates W3C context; for SQS/EventBridge use `extractCarrier` or rely on batch span links |
+| Cold-start metric never `true` | Warm sandbox reused across test invokes | Expected; deploy a new version or wait for a fresh sandbox |
+
+Set `OTEL_DEBUG=true` to get the OTel diagnostic logger at debug level; it prints
+every export attempt and its result.
 
 ## Compatibility & maintenance
 
@@ -344,9 +565,11 @@ and assert on emitted spans and metrics — no live collector required.
 ## Publishing
 
 ```bash
-npm run build                      # tsc -> dist/
-npm publish --access public --provenance
+npm login
+npm publish            # prepublishOnly runs the build
 ```
 
-`--provenance` attaches a verifiable supply-chain attestation (run it from CI on
-a tagged release). Set a real scope/name and confirm the license before publishing.
+`publishConfig.provenance` is `false` because provenance needs an OIDC-capable CI
+runner (GitHub Actions). To publish with provenance from CI, run
+`npm publish --provenance` there and switch the package to npm trusted publishing
+once the first version exists.

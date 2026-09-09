@@ -3,6 +3,31 @@
   "version": "0.1.0",
   "description": "Vendor-neutral OpenTelemetry traces + metrics for AWS Lambda. Exports OTLP; the collector decides the backend.",
   "license": "MIT",
+  "author": "Ebin Joshy Nambiaparambil (https://github.com/nambii)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nambii/lambda-otel.git"
+  },
+  "homepage": "https://github.com/nambii/lambda-otel#readme",
+  "bugs": {
+    "url": "https://github.com/nambii/lambda-otel/issues"
+  },
+  "keywords": [
+    "opentelemetry",
+    "otel",
+    "otlp",
+    "aws",
+    "lambda",
+    "serverless",
+    "tracing",
+    "metrics",
+    "observability",
+    "telemetry-api"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": false
+  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {

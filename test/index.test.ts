@@ -1,6 +1,6 @@
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { SpanStatusCode } from '@opentelemetry/api';
+import { SpanKind, SpanStatusCode } from '@opentelemetry/api';
 import { logs, SeverityNumber } from '@opentelemetry/api-logs';
 import { InMemorySpanExporter, type ReadableSpan } from '@opentelemetry/sdk-trace-base';
 import {
@@ -10,7 +10,7 @@ import {
   type ResourceMetrics,
 } from '@opentelemetry/sdk-metrics';
 import { InMemoryLogRecordExporter, SimpleLogRecordProcessor } from '@opentelemetry/sdk-logs';
-import { initObservability, withObservability, metrics } from '../src/index';
+import { initObservability, withObservability, metrics, ingestTelemetryEvent } from '../src/index';
 
 // Shared in-memory backends. initObservability is idempotent, so we set it up
 // once and reset the exporters between tests.
@@ -121,6 +121,127 @@ test('inbound trace context is propagated into the root span', async () => {
 
   assert.equal(observedTraceId, traceId);
   assert.equal(spans()[0].spanContext().traceId, traceId);
+});
+
+test('API Gateway REST event sets http trigger attributes', async () => {
+  const handler = withObservability(async () => ({ statusCode: 200 }));
+
+  await handler(
+    { httpMethod: 'POST', resource: '/quotes', path: '/quotes', headers: {} },
+    { awsRequestId: 'req-http' },
+  );
+
+  const span = spans()[0];
+  assert.equal(span.kind, SpanKind.SERVER);
+  assert.equal(span.attributes['faas.trigger'], 'http');
+  assert.equal(span.attributes['http.request.method'], 'POST');
+  assert.equal(span.attributes['http.route'], '/quotes');
+});
+
+test('SQS batch yields a CONSUMER span, messaging attrs, and one link per message', async () => {
+  const traceId = '0af7651916cd43dd8448eb211c80319c';
+  const mkRecord = (spanId: string) => ({
+    eventSource: 'aws:sqs',
+    eventSourceARN: 'arn:aws:sqs:ap-southeast-2:123456789012:orders',
+    messageAttributes: { traceparent: { stringValue: `00-${traceId}-${spanId}-01` } },
+  });
+
+  const handler = withObservability(async () => 'ok');
+  await handler(
+    { Records: [mkRecord('b7ad6b7169203331'), mkRecord('aaaaaaaaaaaaaaaa')] },
+    { awsRequestId: 'req-sqs' },
+  );
+
+  const span = spans()[0];
+  assert.equal(span.kind, SpanKind.CONSUMER);
+  assert.equal(span.attributes['faas.trigger'], 'pubsub');
+  assert.equal(span.attributes['messaging.system'], 'aws_sqs');
+  assert.equal(span.attributes['messaging.destination.name'], 'orders');
+  assert.equal(span.attributes['messaging.batch.message_count'], 2);
+  assert.equal(span.links.length, 2);
+  assert.equal(span.links[0].context.traceId, traceId);
+});
+
+test('context attributes derive cloud.resource_id and account from the ARN', async () => {
+  const handler = withObservability(async () => null);
+
+  await handler(
+    { headers: {} },
+    {
+      awsRequestId: 'req-ctx',
+      invokedFunctionArn: 'arn:aws:lambda:ap-southeast-2:123456789012:function:pricer:live',
+      functionName: 'pricer',
+      functionVersion: '7',
+    },
+  );
+
+  const span = spans()[0];
+  assert.equal(span.attributes['cloud.account.id'], '123456789012');
+  // The "live" alias suffix is resolved to the function version.
+  assert.equal(
+    span.attributes['cloud.resource_id'],
+    'arn:aws:lambda:ap-southeast-2:123456789012:function:pricer:7',
+  );
+  // The function's own identity belongs on the Resource, not as faas.invoked_*.
+  assert.equal(span.attributes['faas.invoked_name'], undefined);
+});
+
+test('request and response hooks fire and can annotate the span', async () => {
+  const seen: string[] = [];
+  const handler = withObservability(async () => ({ result: 42 }), {
+    requestHook: (span, { event }) => {
+      seen.push('request');
+      span.setAttribute('test.had_records', Array.isArray((event as any)?.Records));
+    },
+    responseHook: (span, { res }) => {
+      seen.push('response');
+      span.setAttribute('test.result', (res as any)?.result);
+    },
+  });
+
+  await handler({ headers: {} }, { awsRequestId: 'req-hook' });
+
+  assert.deepEqual(seen, ['request', 'response']);
+  const span = spans()[0];
+  assert.equal(span.attributes['test.result'], 42);
+});
+
+test('experimentalAttributes:false suppresses semconv enrichment', async () => {
+  const handler = withObservability(async () => 'ok', { experimentalAttributes: false });
+
+  await handler({ httpMethod: 'GET', resource: '/x', headers: {} }, { awsRequestId: 'req-off' });
+
+  const span = spans()[0];
+  assert.equal(span.attributes['faas.trigger'], undefined);
+  assert.equal(span.attributes['http.route'], undefined);
+  // Baseline attributes still present.
+  assert.equal(span.attributes['faas.invocation_id'], 'req-off');
+});
+
+test('platform.report telemetry is translated into platform metrics', async () => {
+  ingestTelemetryEvent({
+    type: 'platform.report',
+    record: {
+      requestId: 'req-report',
+      status: 'timeout',
+      metrics: { durationMs: 900, billedDurationMs: 1000, memorySizeMB: 128, maxMemoryUsedMB: 90 },
+    },
+  });
+  ingestTelemetryEvent({
+    type: 'platform.restoreReport',
+    record: { status: 'success', metrics: { restoreDurationMs: 230 } },
+  });
+  // Wrong shapes must be ignored, never throw.
+  ingestTelemetryEvent({ type: 'platform.start', record: {} });
+  ingestTelemetryEvent(null);
+
+  // A wrapped invocation force-flushes metrics, exporting what we just recorded.
+  await withObservability(async () => null)({ headers: {} }, { awsRequestId: 'req-flush' });
+
+  assert.ok(hasMetric('faas.mem_usage'));
+  assert.ok(hasMetric('aws.lambda.billed_duration'));
+  assert.ok(hasMetric('aws.lambda.restore_duration'));
+  assert.equal(metricSum('faas.timeouts'), 1);
 });
 
 test('log records are forwarded and carry the active trace context', async () => {

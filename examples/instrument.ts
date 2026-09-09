@@ -7,13 +7,13 @@
  *
  * Why a preload and not the handler module: instrumentation patches `koa` and
  * `undici` at require-time, so it must run BEFORE those modules are imported.
- * The package's built-in `@yourscope/lambda-otel/register` only loads the core
+ * The package's built-in `lambda-otel/register` only loads the core
  * set (http, aws-sdk, pg); this adds the API-handler instrumentations on top.
  *
  * Bundling note: with esbuild/SST, mark these external so they can be patched —
- *   external: ['@opentelemetry/*', '@yourscope/lambda-otel', 'pg', 'koa', '@koa/router']
+ *   external: ['@opentelemetry/*', 'lambda-otel', 'pg', 'koa', '@koa/router']
  */
-import { initObservability, defaultInstrumentations } from '@yourscope/lambda-otel';
+import { initObservability, defaultInstrumentations } from 'lambda-otel';
 import { KoaInstrumentation, KoaLayerType } from '@opentelemetry/instrumentation-koa';
 import { UndiciInstrumentation } from '@opentelemetry/instrumentation-undici';
 import { PinoInstrumentation } from '@opentelemetry/instrumentation-pino';

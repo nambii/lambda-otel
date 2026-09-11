@@ -23,6 +23,9 @@ Capture controls (all opt-in):
 
 Behavior changes (minor bump; all defaults are on):
 
+- **`shutdown()` releases the OTel API globals and resets the `metrics`
+  facade**, so a re-initialised SDK (tests, local harnesses) actually becomes
+  the global provider set and records into it instead of a dead one.
 - **Second `initObservability()` call with options now warns** instead of
   silently ignoring them (the SDK is still initialized exactly once).
 - **`sampler` and `spanProcessors`** config passthrough, for programmatic

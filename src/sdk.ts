@@ -1,8 +1,11 @@
 import {
+  context,
   diag,
   DiagConsoleLogger,
   DiagLogLevel,
   metrics as otelMetrics,
+  propagation,
+  trace,
 } from '@opentelemetry/api';
 import { diagLogLevelFromString } from '@opentelemetry/core';
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
@@ -28,7 +31,7 @@ import { defaultInstrumentations } from './instrumentations';
 import { startTelemetryExtension } from './telemetry-api';
 import { buildPropagator } from './propagation';
 import { buildRedactor, RedactingLogRecordExporter, RedactingSpanExporter } from './redact';
-import { configureMetricsFacade } from './metrics';
+import { configureMetricsFacade, resetMetricsFacade } from './metrics';
 import type { MetricsConfig, ObservabilityConfig } from './types';
 
 let tracerProvider: NodeTracerProvider | undefined;
@@ -266,6 +269,14 @@ export async function shutdown(): Promise<void> {
   tracerProvider = undefined;
   meterProvider = undefined;
   loggerProvider = undefined;
+  // The API registers each global exactly once and silently refuses a second
+  // set; without releasing them a re-init would build providers nobody uses.
+  trace.disable();
+  otelMetrics.disable();
+  logsApi.disable();
+  context.disable();
+  propagation.disable();
+  resetMetricsFacade();
   initialized = false;
 }
 

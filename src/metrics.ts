@@ -37,6 +37,20 @@ export function configureMetricsFacade(opts: { warnCardinalityAbove?: number | f
   warned.clear();
 }
 
+/**
+ * Internal: called by shutdown(). Cached instruments belong to the MeterProvider
+ * that created them; after a shutdown + re-init they would silently record into
+ * a dead provider, so drop them and let the next call re-create them.
+ */
+export function resetMetricsFacade(): void {
+  counters.clear();
+  histograms.clear();
+  gauges.clear();
+  seen.clear();
+  warned.clear();
+  warnAbove = DEFAULT_WARN_CARDINALITY_ABOVE;
+}
+
 function track(name: string, attributes: Attributes | undefined): void {
   if (warnAbove === false || warnAbove <= 0 || warned.has(name)) return;
   let set = seen.get(name);

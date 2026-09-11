@@ -39,6 +39,8 @@ export type {
   ObservabilityConfig,
   InstrumentationConfigMap,
   KoaInstrumentationConfigLike,
+  PgInstrumentationConfigLike,
+  UndiciInstrumentationConfigLike,
   RedactConfig,
   RedactContext,
   MetricsConfig,

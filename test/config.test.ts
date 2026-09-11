@@ -81,6 +81,16 @@ const ctx = () => ({ awsRequestId: 'req', getRemainingTimeInMillis: () => 30_000
 
 // ---- instrumentationConfig ----
 
+// Compile-time only: the structural mirrors must be accepted by the real
+// instrumentation constructors (dev deps here), so config passes through.
+import type { PgInstrumentationConfig } from '@opentelemetry/instrumentation-pg';
+import type { UndiciInstrumentationConfig } from '@opentelemetry/instrumentation-undici';
+import type { PgInstrumentationConfigLike, UndiciInstrumentationConfigLike } from '../src/index';
+const _pg: PgInstrumentationConfig = {} as Required<PgInstrumentationConfigLike>;
+const _undici: UndiciInstrumentationConfig = {} as Required<UndiciInstrumentationConfigLike>;
+void _pg;
+void _undici;
+
 test('instrumentationConfig: false drops an instrumentation, objects pass through, koa is opt-in', () => {
   const names = (list: ReturnType<typeof defaultInstrumentations>) => list.map((i) => i.instrumentationName);
 

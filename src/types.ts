@@ -3,10 +3,37 @@ import type { Sampler, SpanExporter, SpanProcessor } from '@opentelemetry/sdk-tr
 import type { MetricReader, ViewOptions } from '@opentelemetry/sdk-metrics';
 import type { LogRecordExporter, LogRecordProcessor } from '@opentelemetry/sdk-logs';
 import type { AttributeValue, Span, TextMapPropagator } from '@opentelemetry/api';
+import type { InstrumentationConfig } from '@opentelemetry/instrumentation';
 import type { HttpInstrumentationConfig } from '@opentelemetry/instrumentation-http';
 import type { AwsSdkInstrumentationConfig } from '@opentelemetry/instrumentation-aws-sdk';
-import type { PgInstrumentationConfig } from '@opentelemetry/instrumentation-pg';
-import type { UndiciInstrumentationConfig } from '@opentelemetry/instrumentation-undici';
+
+// pg and undici are optionalDependencies. Their config types are mirrored
+// structurally below rather than imported, so a consumer who installs with
+// --omit=optional and type-checks with skipLibCheck: false does not hit
+// "Cannot find module" inside this package's .d.ts. Same keys, same meaning;
+// hooks are typed loosely (`info: any`) to avoid dragging in pg/undici types.
+
+/** Mirrors `PgInstrumentationConfig` (@opentelemetry/instrumentation-pg 0.71.x). */
+export interface PgInstrumentationConfigLike extends InstrumentationConfig {
+  /** Add bound query parameter values to spans. Off by default — PII risk. */
+  enhancedDatabaseReporting?: boolean;
+  requestHook?: (span: Span, queryInfo: any) => void;
+  responseHook?: (span: Span, responseInfo: any) => void;
+  requireParentSpan?: boolean;
+  addSqlCommenterCommentToQueries?: boolean;
+  ignoreConnectSpans?: boolean;
+  enableTraceContextPropagation?: boolean;
+}
+
+/** Mirrors `UndiciInstrumentationConfig` (@opentelemetry/instrumentation-undici 0.29.x). */
+export interface UndiciInstrumentationConfigLike extends InstrumentationConfig {
+  ignoreRequestHook?: (request: any) => boolean;
+  requestHook?: (span: Span, request: any) => void;
+  responseHook?: (span: Span, info: any) => void;
+  startSpanHook?: (request: any) => Record<string, unknown> | undefined;
+  requireParentforSpans?: boolean;
+  headersToSpanAttributes?: { requestHeaders?: string[]; responseHeaders?: string[] };
+}
 
 /**
  * Structural mirror of `KoaInstrumentationConfig` so the type does not leak a
@@ -33,9 +60,9 @@ export interface KoaInstrumentationConfigLike {
 export interface InstrumentationConfigMap {
   http?: HttpInstrumentationConfig | false;
   /** Outbound global `fetch()` (undici). `instrumentation-http` does not see it on Node 18+. */
-  undici?: UndiciInstrumentationConfig | false;
+  undici?: UndiciInstrumentationConfigLike | false;
   awsSdk?: AwsSdkInstrumentationConfig | false;
-  pg?: PgInstrumentationConfig | false;
+  pg?: PgInstrumentationConfigLike | false;
   koa?: KoaInstrumentationConfigLike | false;
 }
 

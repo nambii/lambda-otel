@@ -105,20 +105,39 @@ export function initObservability(config: ObservabilityConfig = {}): void {
 }
 
 /**
- * Push all buffered traces + metrics. Called by the handler wrapper before freeze.
- * Best-effort: a failed export must never propagate into the user's handler, so
- * errors are logged via diag and swallowed.
+ * Push all buffered traces + metrics + logs. Called by the handler wrapper
+ * before freeze. Best-effort: a failed export must never propagate into the
+ * user's handler, so errors are logged via diag and swallowed.
+ *
+ * `timeoutMs` bounds the wait. The exporters keep running in the background if
+ * the deadline passes (they'll finish on the next invocation or be lost at
+ * freeze), but the handler is never held past it. Omit for no bound.
  */
-export async function flush(): Promise<void> {
-  const results = await Promise.allSettled([
+export async function flush(timeoutMs?: number): Promise<void> {
+  const work = Promise.allSettled([
     tracerProvider?.forceFlush(),
     meterProvider?.forceFlush(),
     loggerProvider?.forceFlush(),
-  ]);
-  for (const r of results) {
-    if (r.status === 'rejected') {
-      diag.warn('lambda-otel: flush failed', r.reason);
+  ]).then((results) => {
+    for (const r of results) {
+      if (r.status === 'rejected') diag.warn('lambda-otel: flush failed', r.reason);
     }
+  });
+  if (timeoutMs === undefined || !Number.isFinite(timeoutMs)) return work;
+
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<void>((resolve) => {
+    timer = setTimeout(() => {
+      diag.warn(`lambda-otel: flush abandoned after ${timeoutMs}ms; exporters continue in background`);
+      resolve();
+    }, Math.max(0, timeoutMs));
+    // Never keep the event loop alive just for this timer.
+    timer.unref?.();
+  });
+  try {
+    await Promise.race([work, deadline]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 

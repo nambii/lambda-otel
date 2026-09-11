@@ -15,6 +15,10 @@ const TRACER_NAME = 'lambda-otel';
 
 /** Fire the timeout handler this many ms before the Lambda deadline. */
 const DEFAULT_TIMEOUT_MARGIN_MS = 500;
+/** Upper bound on how long the per-invocation flush may hold the handler. */
+const DEFAULT_FLUSH_TIMEOUT_MS = 5_000;
+/** Always leave the runtime this much headroom after flush. */
+const FLUSH_HEADROOM_MS = 100;
 
 // Module scope persists across warm invocations in the same sandbox.
 let isColdStart = true;
@@ -67,13 +71,19 @@ export interface WrapOptions {
    * is still returned. Set `false` to disable. Default 500.
    */
   timeoutMarginMs?: number | false;
+  /**
+   * Cap on how long the post-invocation flush may hold the response, in ms.
+   * Also bounded by the time remaining on the invocation. Exporters continue in
+   * the background past the cap. Default 5000.
+   */
+  flushTimeoutMs?: number;
 }
 
 /**
  * Wraps a Lambda handler with a root span, inbound context propagation,
  * trigger-aware semantic attributes + batch span links, cold-start + duration +
- * error metrics, timeout capture, and a guaranteed flush of all signals before
- * the sandbox freezes.
+ * error metrics, timeout capture, and a bounded flush of all signals before the
+ * sandbox freezes.
  */
 export function withObservability<E = any, R = any>(
   handler: LambdaHandler<E, R>,
@@ -141,7 +151,7 @@ export function withObservability<E = any, R = any>(
               recordDuration();
               endSpan();
               // Fire and forget: whatever ships inside the margin is what survives.
-              void flush();
+              void flush(Math.max(margin - FLUSH_HEADROOM_MS, 0));
             }, remaining - margin);
             // The timer must never keep a finished invocation alive.
             timer.unref?.();
@@ -178,8 +188,9 @@ export function withObservability<E = any, R = any>(
               recordDuration();
               endSpan();
             }
-            // The critical Lambda step: ship everything before the runtime freezes.
-            await flush();
+            // The critical Lambda step: ship everything before the runtime freezes,
+            // but never hold the response past the flush cap or the deadline.
+            await flush(flushBudget(lambdaContext, opts));
           }
         },
       ),
@@ -195,6 +206,13 @@ function remainingMs(lambdaContext: LambdaContextLike | undefined): number | und
   } catch {
     return undefined;
   }
+}
+
+function flushBudget(lambdaContext: LambdaContextLike | undefined, opts: WrapOptions): number {
+  const cap = opts.flushTimeoutMs ?? DEFAULT_FLUSH_TIMEOUT_MS;
+  const remaining = remainingMs(lambdaContext);
+  if (remaining === undefined) return cap;
+  return Math.min(cap, Math.max(remaining - FLUSH_HEADROOM_MS, 0));
 }
 
 // A user hook must never break the handler — capture is best-effort.

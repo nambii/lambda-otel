@@ -30,9 +30,11 @@ Behavior changes (minor bump; all defaults are on):
   changes, so a metric recorded before `initObservability()` no longer turns
   that name into a permanent no-op. Cardinality tracking is off when
   `metrics: false`.
-- **`shutdown()` releases the OTel API globals and resets the `metrics`
-  facade**, so a re-initialised SDK (tests, local harnesses) actually becomes
-  the global provider set and records into it instead of a dead one.
+- **`shutdown()` releases the OTel API globals, unhooks instrumentations and
+  resets the `metrics` facade**, so a re-initialised SDK (tests, local
+  harnesses) actually becomes the global provider set and records into it
+  instead of a dead one. A constructor that throws during init no longer
+  leaves the SDK permanently "initialized".
 - **Second `initObservability()` call with options now warns** instead of
   silently ignoring them (the SDK is still initialized exactly once).
 - **`sampler` and `spanProcessors`** config passthrough, for programmatic

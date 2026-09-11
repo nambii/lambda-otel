@@ -21,7 +21,7 @@ import {
   type ViewOptions,
 } from '@opentelemetry/sdk-metrics';
 import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-http';
-import { registerInstrumentations } from '@opentelemetry/instrumentation';
+import { registerInstrumentations, type Instrumentation } from '@opentelemetry/instrumentation';
 import { logs as logsApi } from '@opentelemetry/api-logs';
 import { BatchLogRecordProcessor, LoggerProvider } from '@opentelemetry/sdk-logs';
 import { OTLPLogExporter } from '@opentelemetry/exporter-logs-otlp-http';
@@ -37,6 +37,16 @@ import type { MetricsConfig, ObservabilityConfig } from './types';
 let tracerProvider: NodeTracerProvider | undefined;
 let meterProvider: MeterProvider | undefined;
 let loggerProvider: LoggerProvider | undefined;
+let unregisterInstrumentations: (() => void) | undefined;
+/**
+ * Default instrumentation instances survive shutdown(). require-in-the-middle
+ * only calls an instrumentation's hook the first time a module is required,
+ * so a *new* instance created on re-init would never get to patch modules
+ * that are already loaded; a reused instance re-patches from the exports it
+ * captured the first time. Real Lambda never re-inits; tests and local
+ * harnesses do.
+ */
+let defaultInstances: Instrumentation[] | undefined;
 let initialized = false;
 
 /** Default OTLP request timeout; the upstream default (10 s) exceeds the flush cap. */
@@ -180,8 +190,19 @@ export function initObservability(config: ObservabilityConfig = {}): void {
     }
     return;
   }
-  initialized = true;
+  // Mark initialized only once everything below has been constructed: a
+  // throwing exporter/reader constructor must not leave a half-built SDK
+  // that refuses every later init.
+  try {
+    build(config);
+    initialized = true;
+  } catch (err) {
+    void shutdown().catch(() => {});
+    throw err;
+  }
+}
 
+function build(config: ObservabilityConfig): void {
   // Diagnostics: explicit debug wins, else honor OTEL_LOG_LEVEL.
   const level = config.debug
     ? DiagLogLevel.DEBUG
@@ -264,11 +285,22 @@ export function initObservability(config: ObservabilityConfig = {}): void {
   }
 
   // ---- Instrumentations ----
-  registerInstrumentations({
-    instrumentations: config.instrumentations ?? defaultInstrumentations(config.instrumentationConfig),
+  let instrumentations = config.instrumentations;
+  if (!instrumentations) {
+    if (!defaultInstances || config.instrumentationConfig) {
+      defaultInstances = defaultInstrumentations(config.instrumentationConfig);
+    }
+    instrumentations = defaultInstances;
+  }
+  unregisterInstrumentations = registerInstrumentations({
+    instrumentations,
     tracerProvider,
     meterProvider,
   });
+  // registerInstrumentations only enables instances whose config says
+  // `enabled: false`; one that shutdown() disabled keeps `enabled: true` in its
+  // config and would stay off. enable() is idempotent on a live instance.
+  for (const i of instrumentations) i.enable();
 
   // ---- Lambda Telemetry API (experimental, opt-in) ----
   // Stands up an internal extension to capture platform metrics (max memory,
@@ -326,6 +358,10 @@ export async function shutdown(): Promise<void> {
   tracerProvider = undefined;
   meterProvider = undefined;
   loggerProvider = undefined;
+  // Unhook instrumentations bound to the dead providers; a re-init registers
+  // fresh instances against the new ones.
+  unregisterInstrumentations?.();
+  unregisterInstrumentations = undefined;
   // The API registers each global exactly once and silently refuses a second
   // set; without releasing them a re-init would build providers nobody uses.
   trace.disable();

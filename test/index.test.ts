@@ -423,7 +423,7 @@ test('platform.report telemetry is translated into platform metrics', async () =
   });
   ingestTelemetryEvent({
     type: 'platform.restoreReport',
-    record: { status: 'success', metrics: { restoreDurationMs: 230 } },
+    record: { status: 'success', metrics: { durationMs: 230 } }, // schema field name
   });
   ingestTelemetryEvent({
     type: 'platform.initReport',

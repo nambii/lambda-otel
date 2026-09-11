@@ -23,6 +23,9 @@ Capture controls (all opt-in):
 
 Behavior changes (minor bump; all defaults are on):
 
+- **`aws.lambda.restore_duration` now reads `platform.restoreReport`'s
+  `durationMs`** (the schema's field; the old `restoreDurationMs` lookup never
+  matched on real SnapStart functions).
 - **`metrics` facade re-binds to the global MeterProvider** whenever it
   changes, so a metric recorded before `initObservability()` no longer turns
   that name into a permanent no-op. Cardinality tracking is off when

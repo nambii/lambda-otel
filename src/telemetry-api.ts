@@ -100,8 +100,12 @@ export function ingestTelemetryEvent(event: unknown): void {
       metrics.record('aws.lambda.init_duration', m.durationMs / 1000, undefined, { unit: 's' });
     }
   } else if (e.type === 'platform.restoreReport') {
-    if (typeof m.restoreDurationMs === 'number') {
-      metrics.record('aws.lambda.restore_duration', m.restoreDurationMs / 1000, undefined, { unit: 's' });
+    // Telemetry API schema: restoreReport.metrics.durationMs (restoreDurationMs
+    // is the name of the same figure inside platform.report; read it from the
+    // one event that is emitted exactly once per restore).
+    const restoreMs = typeof m.durationMs === 'number' ? m.durationMs : m.restoreDurationMs;
+    if (typeof restoreMs === 'number') {
+      metrics.record('aws.lambda.restore_duration', restoreMs / 1000, undefined, { unit: 's' });
     }
   }
 }

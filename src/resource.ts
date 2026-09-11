@@ -8,8 +8,37 @@ import type { ObservabilityConfig } from './types';
  * and 2.x (resourceFromAttributes(attrs)). We detect which is present so the
  * package works across the range consumers may have installed.
  */
+type ResourceAttrs = Record<string, string | number | boolean>;
+
+/**
+ * Parse the standard `OTEL_RESOURCE_ATTRIBUTES` env var: comma-separated
+ * `key=value` pairs, values percent-decoded (spec: W3C Baggage encoding).
+ * Malformed pairs are skipped rather than failing init.
+ */
+export function parseResourceAttributesEnv(raw: string | undefined): ResourceAttrs {
+  const out: ResourceAttrs = {};
+  if (!raw) return out;
+  for (const pair of raw.split(',')) {
+    const eq = pair.indexOf('=');
+    if (eq <= 0) continue;
+    const key = pair.slice(0, eq).trim();
+    const value = pair.slice(eq + 1).trim();
+    if (!key) continue;
+    try {
+      out[key] = decodeURIComponent(value);
+    } catch {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
 export function buildResource(config: ObservabilityConfig) {
-  const attrs: Record<string, string | number> = {
+  const attrs: ResourceAttrs = {
+    // Lowest precedence: user-supplied attributes from env, then from code.
+    ...parseResourceAttributesEnv(process.env.OTEL_RESOURCE_ATTRIBUTES),
+    ...(config.resourceAttributes ?? {}),
+    // Then the package's own identity attributes, which explicit config drives.
     'service.name':
       config.serviceName ??
       process.env.OTEL_SERVICE_NAME ??
@@ -34,8 +63,8 @@ export function buildResource(config: ObservabilityConfig) {
   }
 
   const r = resources as unknown as {
-    resourceFromAttributes?: (a: Record<string, string | number>) => unknown;
-    Resource?: new (a: Record<string, string | number>) => unknown;
+    resourceFromAttributes?: (a: ResourceAttrs) => unknown;
+    Resource?: new (a: ResourceAttrs) => unknown;
   };
   if (typeof r.resourceFromAttributes === 'function') {
     return r.resourceFromAttributes(attrs);

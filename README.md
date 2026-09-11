@@ -182,6 +182,7 @@ handler `import`s are never patched and you would see only the root span.
 | `serviceName`     | `OTEL_SERVICE_NAME`, fn name    | `unknown-service`        |
 | `serviceVersion`  | fn version                      | —                        |
 | `environment`     | `DEPLOYMENT_ENV`                | —                        |
+| `resourceAttributes` | `OTEL_RESOURCE_ATTRIBUTES`   | —                        |
 | `otlpEndpoint`    | `OTEL_EXPORTER_OTLP_ENDPOINT`   | `http://localhost:4318`  |
 | `exporterTimeoutMillis` | `OTEL_EXPORTER_OTLP[_<SIGNAL>]_TIMEOUT` | `3000`         |
 | `instrumentations`| —                               | http, undici, aws-sdk, pg |

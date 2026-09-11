@@ -91,6 +91,13 @@ export interface ObservabilityConfig {
   /** Deployment environment (e.g. "prod", "staging"). Falls back to DEPLOYMENT_ENV. */
   environment?: string;
   /**
+   * Extra resource attributes (team, cost centre, `service.namespace`, …).
+   * Merged over the standard `OTEL_RESOURCE_ATTRIBUTES` env var
+   * (`key=value,key2=value2`, values URL-decoded), which is merged over the
+   * package's Lambda defaults. Explicit fields like `serviceName` still win.
+   */
+  resourceAttributes?: Record<string, string | number | boolean>;
+  /**
    * OTLP base endpoint (no path). The package appends /v1/traces and /v1/metrics.
    * If omitted, the standard OTEL_EXPORTER_OTLP_* env vars are honored
    * (including per-signal endpoints and headers), falling back to

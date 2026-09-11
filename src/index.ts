@@ -18,6 +18,7 @@ export {
 } from './handler';
 export { detectTrigger, type TriggerInfo, type FaasTriggerType } from './triggers';
 export { normalizeCarrier, isXrayEnabled } from './propagation';
+export { buildResource, parseResourceAttributesEnv } from './resource';
 export {
   startTelemetryExtension,
   ingestTelemetryEvent,

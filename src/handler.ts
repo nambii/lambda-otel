@@ -42,8 +42,13 @@ type LambdaHandler<E, R> = (event: E, ...rest: any[]) => Promise<R>;
 
 /** Receives the root span plus the raw event/context before the handler runs. */
 export type RequestHook = (span: Span, info: { event: unknown; context: unknown }) => void;
-/** Receives the root span plus the handler result or thrown error. */
-export type ResponseHook = (span: Span, info: { err?: unknown; res?: unknown }) => void;
+/**
+ * Receives the root span plus the handler result or thrown error. When the
+ * timeout timer already closed the span, `timedOut` is true and the span is
+ * ended: attribute writes are ignored by the SDK, but the hook still runs so
+ * you can log or count the late outcome.
+ */
+export type ResponseHook = (span: Span, info: { err?: unknown; res?: unknown; timedOut?: boolean }) => void;
 
 export interface WrapOptions {
   /** Root span name. Defaults to the Lambda function name. */
@@ -203,11 +208,11 @@ export function withObservability<E = any, R = any>(
           runHook(opts.requestHook, span, { event, context: lambdaContext });
           try {
             const result = await handler(event, ...rest);
-            runHook(opts.responseHook, span, { res: result });
+            runHook(opts.responseHook, span, { res: result, timedOut });
             if (!timedOut) applyHttpResponse(span, trigger, result, coldStart, opts);
             return result;
           } catch (err: any) {
-            runHook(opts.responseHook, span, { err });
+            runHook(opts.responseHook, span, { err, timedOut });
             if (!timedOut) {
               const type = errorType(err);
               span.recordException(err);

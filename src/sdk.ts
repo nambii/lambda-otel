@@ -335,7 +335,10 @@ export async function flush(timeoutMs?: number): Promise<void> {
   let timer: NodeJS.Timeout | undefined;
   const deadline = new Promise<void>((resolve) => {
     timer = setTimeout(() => {
-      diag.warn(`lambda-otel: flush abandoned after ${timeoutMs}ms; exporters continue in background`);
+      // A zero budget means the invocation is already at its deadline (the
+      // timeout path has flushed what it could); not worth a warning per invoke.
+      const log = timeoutMs > 0 ? diag.warn : diag.debug;
+      log(`lambda-otel: flush abandoned after ${timeoutMs}ms; exporters continue in background`);
       resolve();
     }, Math.max(0, timeoutMs));
     // Never keep the event loop alive just for this timer.

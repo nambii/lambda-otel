@@ -183,6 +183,26 @@ test('imminent timeout ends the span as an error and counts faas.timeouts before
   assert.equal(metricSum('faas.errors'), 1);
 });
 
+test('responseHook after a timeout sees timedOut=true and cannot break the handler', async () => {
+  const seen: Array<{ timedOut?: boolean; res?: unknown }> = [];
+  const handler = withObservability(
+    async () => {
+      await sleep(120);
+      return 'late';
+    },
+    { timeoutMarginMs: 150, responseHook: (span, info) => { seen.push(info); span.setAttribute('late.write', 1); } },
+  );
+  assert.equal(await handler({ headers: {} }, ctx({ awsRequestId: 'req-hook-timeout' }, 200)), 'late');
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].timedOut, true);
+  assert.equal(seen[0].res, 'late');
+  assert.equal(spans()[0].attributes['late.write'], undefined, 'write on an ended span is dropped');
+
+  const quick = withObservability(async () => 'ok', { responseHook: (_s, info) => seen.push(info) });
+  await quick({ headers: {} }, ctx());
+  assert.equal(seen[1].timedOut, false);
+});
+
 test('timeout capture is skipped when the handler finishes in time or is disabled', async () => {
   await withObservability(async () => 'quick', { timeoutMarginMs: 50 })({ headers: {} }, ctx({}, 5000));
   await withObservability(async () => {

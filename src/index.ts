@@ -23,7 +23,11 @@ export {
 } from './telemetry-api';
 export { metrics, type InstrumentOptions } from './metrics';
 export { defaultInstrumentations } from './instrumentations';
-export type { ObservabilityConfig } from './types';
+export type {
+  ObservabilityConfig,
+  InstrumentationConfigMap,
+  KoaInstrumentationConfigLike,
+} from './types';
 
 // Re-export the OTEL API surface most consumers reach for, so they don't have
 // to add @opentelemetry/api as a direct dependency for basic manual spans.

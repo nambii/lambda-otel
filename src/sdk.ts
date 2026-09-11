@@ -137,7 +137,7 @@ export function initObservability(config: ObservabilityConfig = {}): void {
 
   // ---- Instrumentations ----
   registerInstrumentations({
-    instrumentations: config.instrumentations ?? defaultInstrumentations(),
+    instrumentations: config.instrumentations ?? defaultInstrumentations(config.instrumentationConfig),
     tracerProvider,
     meterProvider,
   });

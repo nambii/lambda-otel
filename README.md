@@ -184,6 +184,7 @@ handler `import`s are never patched and you would see only the root span.
 | `environment`     | `DEPLOYMENT_ENV`                | —                        |
 | `otlpEndpoint`    | `OTEL_EXPORTER_OTLP_ENDPOINT`   | `http://localhost:4318`  |
 | `instrumentations`| —                               | http, aws-sdk, pg        |
+| `instrumentationConfig` | —                         | upstream defaults        |
 | `xrayPropagation` | —                               | `false`                  |
 | `views` / `defaultViews` | —                        | built-in histogram views |
 | `telemetryMetrics`| —                               | `false`                  |
@@ -391,32 +392,50 @@ export const handler = withObservability(
 
 The same applies to `serverless-http`, Powertools' `injectLambdaContext`, etc.
 
-## Optional instrumentations
+## Controlling what gets captured
 
-The core install stays lean (`http` + `aws-sdk` + `pg`). Add framework-specific
-instrumentations yourself and pass them in. For a Koa API handler:
+### Per-instrumentation options (`instrumentationConfig`)
 
-```bash
-npm install @opentelemetry/instrumentation-koa @opentelemetry/instrumentation-undici
-```
+Each key takes the upstream instrumentation's own config object — every hook,
+ignore function and header-capture option it supports — or `false` to leave
+that instrumentation out. No need to rebuild the list to change one flag.
 
 ```ts
-import { defaultInstrumentations, initObservability } from 'lambda-otel';
-import { KoaInstrumentation } from '@opentelemetry/instrumentation-koa';
-import { UndiciInstrumentation } from '@opentelemetry/instrumentation-undici';
-
 initObservability({
-  instrumentations: [...defaultInstrumentations(), new KoaInstrumentation(), new UndiciInstrumentation()],
+  instrumentationConfig: {
+    http: {
+      ignoreIncomingRequestHook: (req) => req.url === '/health',
+      headersToSpanAttributes: { client: { requestHeaders: ['x-request-id'] } },
+      redactedQueryParams: ['token', 'signature'],
+    },
+    pg: { enhancedDatabaseReporting: false, ignoreConnectSpans: true }, // or false
+    awsSdk: { sqsExtractContextPropagationFromPayload: false },         // or false
+    koa: { ignoreLayersType: ['middleware'] },                          // opt-in, see below
+  },
 });
 ```
 
-- **Koa** adds a span per route/middleware under the `http` server span. It's
-  chatty — use `ignoreLayersType` to keep only the route spans.
-- **Undici** traces outbound global `fetch()`, which `instrumentation-http`
-  does **not** capture on Node 18+.
+| Key | Upstream type | Notes |
+|---|---|---|
+| `http` | `HttpInstrumentationConfig` | ignore hooks, `headersToSpanAttributes`, `redactedQueryParams`, request/response hooks |
+| `awsSdk` | `AwsSdkInstrumentationConfig` | `suppressInternalInstrumentation` stays `true` unless you flip it |
+| `pg` | `PgInstrumentationConfig` | `enhancedDatabaseReporting` adds bound parameter values — leave off for PII |
+| `koa` | mirror of `KoaInstrumentationConfig` | registered only when set; needs `npm install @opentelemetry/instrumentation-koa` |
 
-Register these in a preload (so they patch before `koa`/`undici` load) and, if
-you bundle with esbuild, add them to the externalized list.
+`instrumentations: [...]` still replaces the whole set when you need something
+not in the map (undici for `fetch()`, pino/winston for log correlation):
+
+```ts
+initObservability({
+  instrumentations: [
+    ...defaultInstrumentations({ koa: { ignoreLayersType: ['middleware'] } }),
+    new UndiciInstrumentation(),
+  ],
+});
+```
+
+Register extra instrumentations in a preload (so they patch before the library
+loads) and, if you bundle with esbuild, add them to the externalized list.
 
 ## Logs (trace correlation + optional forwarding)
 

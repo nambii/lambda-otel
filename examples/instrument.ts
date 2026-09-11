@@ -14,7 +14,6 @@
  *   external: ['@opentelemetry/*', 'lambda-otel', 'pg', 'koa', '@koa/router']
  */
 import { initObservability, defaultInstrumentations } from 'lambda-otel';
-import { KoaInstrumentation, KoaLayerType } from '@opentelemetry/instrumentation-koa';
 import { UndiciInstrumentation } from '@opentelemetry/instrumentation-undici';
 import { PinoInstrumentation } from '@opentelemetry/instrumentation-pino';
 // Winston is the same shape:
@@ -26,11 +25,12 @@ initObservability({
   // Leave it off to keep logs in CloudWatch and just correlate by trace_id.
   // logs: true,
   instrumentations: [
-    ...defaultInstrumentations(), // http + aws-sdk + pg
-    new KoaInstrumentation({
+    ...defaultInstrumentations({
+      // http + aws-sdk + pg with their upstream options, plus opt-in koa.
+      http: { ignoreIncomingRequestHook: (req) => req.url === '/health' },
       // Generic per-middleware spans are noisy; keep router (route-name) spans,
       // drop the rest. Remove this to see every middleware layer.
-      ignoreLayersType: [KoaLayerType.MIDDLEWARE],
+      koa: { ignoreLayersType: ['middleware'] },
     }),
     new UndiciInstrumentation(), // outbound global fetch() — not covered by http
     // Injects trace_id / span_id / trace_flags into every pino log line so logs

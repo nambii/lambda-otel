@@ -61,10 +61,14 @@
   },
   "peerDependencies": {
     "@opentelemetry/api": "^1.9.0",
-    "@opentelemetry/propagator-aws-xray": "^2.0.0"
+    "@opentelemetry/propagator-aws-xray": "^2.0.0",
+    "@opentelemetry/instrumentation-koa": "^0.67.0"
   },
   "peerDependenciesMeta": {
     "@opentelemetry/propagator-aws-xray": {
+      "optional": true
+    },
+    "@opentelemetry/instrumentation-koa": {
       "optional": true
     }
   },

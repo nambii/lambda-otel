@@ -2,7 +2,36 @@ import type { Instrumentation } from '@opentelemetry/instrumentation';
 import type { SpanExporter } from '@opentelemetry/sdk-trace-base';
 import type { MetricReader, ViewOptions } from '@opentelemetry/sdk-metrics';
 import type { LogRecordExporter, LogRecordProcessor } from '@opentelemetry/sdk-logs';
-import type { TextMapPropagator } from '@opentelemetry/api';
+import type { Span, TextMapPropagator } from '@opentelemetry/api';
+import type { HttpInstrumentationConfig } from '@opentelemetry/instrumentation-http';
+import type { AwsSdkInstrumentationConfig } from '@opentelemetry/instrumentation-aws-sdk';
+import type { PgInstrumentationConfig } from '@opentelemetry/instrumentation-pg';
+
+/**
+ * Structural mirror of `KoaInstrumentationConfig` so the type does not leak a
+ * dependency on the optional `@opentelemetry/instrumentation-koa` package into
+ * consumers' type-checks. Same keys, same meaning.
+ */
+export interface KoaInstrumentationConfigLike {
+  /** Layer kinds to skip. `'middleware'` drops the noisy per-middleware spans. */
+  ignoreLayersType?: Array<'router' | 'middleware'>;
+  /** Annotate each layer span. `info` is the upstream `KoaRequestInfo`. */
+  requestHook?: (span: Span, info: { context: unknown; middlewareLayer: unknown; layerType: 'router' | 'middleware' }) => void;
+}
+
+/**
+ * Per-instrumentation options for the default set. Each key takes the upstream
+ * instrumentation's own config object (every hook, ignore function and header
+ * capture option it supports), or `false` to leave that instrumentation out.
+ * `koa` is opt-in: it is only registered when a config object is given, and
+ * needs the optional peer `@opentelemetry/instrumentation-koa`.
+ */
+export interface InstrumentationConfigMap {
+  http?: HttpInstrumentationConfig | false;
+  awsSdk?: AwsSdkInstrumentationConfig | false;
+  pg?: PgInstrumentationConfig | false;
+  koa?: KoaInstrumentationConfigLike | false;
+}
 
 export interface ObservabilityConfig {
   /** Logical service name. Falls back to OTEL_SERVICE_NAME, then the Lambda function name. */
@@ -36,6 +65,12 @@ export interface ObservabilityConfig {
   views?: ViewOptions[];
   /** Register the package's built-in histogram views. Default true. */
   defaultViews?: boolean;
+  /**
+   * Options for the default instrumentations (http, aws-sdk, pg, opt-in koa):
+   * upstream config objects passed straight through, or `false` to disable
+   * one. Ignored when `instrumentations` is set.
+   */
+  instrumentationConfig?: InstrumentationConfigMap;
   /** Override the default instrumentation set entirely. */
   instrumentations?: Instrumentation[];
   /**

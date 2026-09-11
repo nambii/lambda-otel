@@ -2,6 +2,14 @@
 
 ## Unreleased (0.2.0)
 
+Capture controls (all opt-in):
+
+- **`instrumentationConfig`**: per-instrumentation options for the default
+  set — `http`, `awsSdk`, `pg` take their upstream config objects, `false`
+  disables one, `koa` is opt-in (optional peer
+  `@opentelemetry/instrumentation-koa`). `defaultInstrumentations(map)` takes
+  the same map.
+
 Behavior changes (minor bump; all defaults are on):
 
 - **Timeout capture.** `withObservability` arms a timer at

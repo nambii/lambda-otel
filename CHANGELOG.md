@@ -23,6 +23,10 @@ Capture controls (all opt-in):
 
 Behavior changes (minor bump; all defaults are on):
 
+- **`metrics` facade re-binds to the global MeterProvider** whenever it
+  changes, so a metric recorded before `initObservability()` no longer turns
+  that name into a permanent no-op. Cardinality tracking is off when
+  `metrics: false`.
 - **`shutdown()` releases the OTel API globals and resets the `metrics`
   facade**, so a re-initialised SDK (tests, local harnesses) actually becomes
   the global provider set and records into it instead of a dead one.

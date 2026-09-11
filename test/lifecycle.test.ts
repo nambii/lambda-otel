@@ -28,6 +28,15 @@ function sum(exporter: InMemoryMetricExporter, name: string): number | undefined
   return total;
 }
 
+test('a metric recorded before init is a no-op, but the same name works after init', async () => {
+  metrics.count('early.bird', 1); // no provider yet: silently dropped, must not poison the cache
+  const exporter = boot();
+  metrics.count('early.bird', 5);
+  await flush();
+  assert.equal(sum(exporter, 'early.bird'), 5);
+  await shutdown();
+});
+
 test('shutdown() then initObservability(): the metrics facade re-binds to the new provider', async () => {
   const first = boot();
   metrics.count('jobs.done', 1);

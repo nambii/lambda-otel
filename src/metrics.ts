@@ -8,8 +8,21 @@ const counters = new Map<string, Counter>();
 const histograms = new Map<string, Histogram>();
 const gauges = new Map<string, Gauge>();
 
+// The metrics API has no proxy provider: before initObservability() (or after
+// shutdown()) getMeterProvider() is the no-op one, and an instrument created
+// then is a no-op forever. Track which provider the cache belongs to and drop
+// it whenever the global changes, so early or late callers self-heal.
+let cachedProvider: unknown;
+
 function meter() {
-  return otelMetrics.getMeter(METER_NAME);
+  const provider = otelMetrics.getMeterProvider();
+  if (provider !== cachedProvider) {
+    counters.clear();
+    histograms.clear();
+    gauges.clear();
+    cachedProvider = provider;
+  }
+  return provider.getMeter(METER_NAME);
 }
 
 /**
@@ -30,9 +43,14 @@ let warnAbove: number | false = DEFAULT_WARN_CARDINALITY_ABOVE;
 const seen = new Map<string, Set<string>>();
 const warned = new Set<string>();
 
-/** Internal: set by initObservability from `metricsConfig.warnCardinalityAbove`. */
-export function configureMetricsFacade(opts: { warnCardinalityAbove?: number | false }): void {
-  if (opts.warnCardinalityAbove !== undefined) warnAbove = opts.warnCardinalityAbove;
+/**
+ * Internal: set by initObservability. `enabled: false` (metrics disabled)
+ * switches the cardinality guard off — nothing is exported, so there is
+ * nothing worth warning about or tracking.
+ */
+export function configureMetricsFacade(opts: { warnCardinalityAbove?: number | false; enabled?: boolean }): void {
+  if (opts.enabled === false) warnAbove = false;
+  else if (opts.warnCardinalityAbove !== undefined) warnAbove = opts.warnCardinalityAbove;
   seen.clear();
   warned.clear();
 }
@@ -49,6 +67,7 @@ export function resetMetricsFacade(): void {
   seen.clear();
   warned.clear();
   warnAbove = DEFAULT_WARN_CARDINALITY_ABOVE;
+  cachedProvider = undefined;
 }
 
 function track(name: string, attributes: Attributes | undefined): void {
@@ -85,9 +104,10 @@ function serialize(attributes: Attributes): string {
 export const metrics = {
   /** Monotonic counter — e.g. metrics.count('orders.created', 1, { currency: 'AUD' }). */
   count(name: string, value = 1, attributes?: Attributes, options?: InstrumentOptions): void {
+    const m = meter();
     let c = counters.get(name);
     if (!c) {
-      c = meter().createCounter(name, options);
+      c = m.createCounter(name, options);
       counters.set(name, c);
     }
     track(name, attributes);
@@ -96,9 +116,10 @@ export const metrics = {
 
   /** Distribution — e.g. latency, payload sizes. Pass `{ unit: 's' }` etc. on first use. */
   record(name: string, value: number, attributes?: Attributes, options?: InstrumentOptions): void {
+    const m = meter();
     let h = histograms.get(name);
     if (!h) {
-      h = meter().createHistogram(name, options);
+      h = m.createHistogram(name, options);
       histograms.set(name, h);
     }
     track(name, attributes);
@@ -107,9 +128,10 @@ export const metrics = {
 
   /** Point-in-time value — e.g. queue depth at invocation time. Requires @opentelemetry/api >= 1.9. */
   gauge(name: string, value: number, attributes?: Attributes, options?: InstrumentOptions): void {
+    const m = meter();
     let g = gauges.get(name);
     if (!g) {
-      g = meter().createGauge(name, options);
+      g = m.createGauge(name, options);
       gauges.set(name, g);
     }
     track(name, attributes);

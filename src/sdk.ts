@@ -225,8 +225,11 @@ export function initObservability(config: ObservabilityConfig = {}): void {
   });
 
   // ---- Metrics (on by default; disable with metrics:false, e.g. for Sentry) ----
+  configureMetricsFacade({
+    enabled: config.metrics !== false,
+    warnCardinalityAbove: config.metricsConfig?.warnCardinalityAbove,
+  });
   if (config.metrics !== false) {
-    configureMetricsFacade({ warnCardinalityAbove: config.metricsConfig?.warnCardinalityAbove });
     const reader =
       config.metricReader ??
       new PeriodicExportingMetricReader({

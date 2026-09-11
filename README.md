@@ -9,17 +9,31 @@ republish.
 
 ## What it does that the raw SDK / ADOT layer don't
 
-- **Force-flushes traces *and* metrics on every invocation.** Lambda freezes the
-  sandbox between invokes, so the metrics SDK's periodic export timer is
-  unreliable. The handler wrapper flushes both signals in a `finally` before the
-  runtime freezes. Flush is best-effort — a failed export never breaks your handler.
+- **Force-flushes traces *and* metrics on every invocation, with a deadline.**
+  Lambda freezes the sandbox between invokes, so the metrics SDK's periodic
+  export timer is unreliable. The handler wrapper flushes every signal in a
+  `finally` before the runtime freezes, bounded by `flushTimeoutMs` and the
+  time remaining on the invocation. Flush is best-effort — a failed or abandoned
+  export never breaks your handler.
+- **Captures timeouts.** A timer armed from `getRemainingTimeInMillis()` ends
+  the root span as an error, counts `faas.timeouts`, and flushes *before* the
+  runtime kills the sandbox — the invocations you most need to see are exactly
+  the ones a plain `finally` never reaches.
+- **Treats returned 5xx as failures.** An HTTP handler that returns
+  `{ statusCode: 500 }` without throwing gets an ERROR span and a `faas.errors`
+  count, same as an exception. `http.response.status_code` is always set.
 - **Delta temporality for metrics.** Cumulative counters are meaningless across
   ephemeral, concurrent sandboxes that reset on cold start. Delta makes each
   export self-contained and is what OTLP backends expect from serverless.
 - **Explicit instrumentation + a preload entry** so it survives esbuild bundling
   (see the caveat below).
 - **Cold-start, duration, and error metrics** plus a root span with inbound
-  context propagation, out of the box.
+  context propagation (W3C, optionally AWS X-Ray), out of the box. Duration
+  histograms ship with seconds-scale buckets and units so percentiles work on
+  bucket-based backends, not just Datadog.
+- **ESM and CommonJS preload entries.** `--import lambda-otel/register` installs
+  OpenTelemetry's ESM loader hook before the SDK, so `import`ed packages are
+  patched under an ESM handler (SST's default), not only `require`d ones.
 - **Trigger-aware enrichment.** The wrapper inspects the event and applies the
   OTel FaaS/messaging semantic conventions automatically: `faas.trigger`, the
   right span kind (`CONSUMER` for SQS/SNS/Kinesis, `SERVER` for HTTP), `http.route`
@@ -153,7 +167,11 @@ none for `http`, `@aws-sdk/*`, or `pg`. Two fixes:
    let it own instrumentation; use this package purely for the metrics facade and
    flush-correct handler wrapper.
 
-ESM functions use `--import` instead of `--require`.
+**ESM functions** use `--import lambda-otel/register` instead of `--require`.
+The ESM entry first registers OpenTelemetry's loader hook (`module.register`,
+Node ≥ 18.19 / 20.6), then initializes the SDK; without the hook, packages the
+handler `import`s are never patched and you would see only the root span.
+`register.mjs` is what makes SST v2's default `nodejs.format: "esm"` work.
 
 ## Configuration
 
@@ -166,7 +184,22 @@ ESM functions use `--import` instead of `--require`.
 | `environment`     | `DEPLOYMENT_ENV`                | —                        |
 | `otlpEndpoint`    | `OTEL_EXPORTER_OTLP_ENDPOINT`   | `http://localhost:4318`  |
 | `instrumentations`| —                               | http, aws-sdk, pg        |
-| `debug`           | `OTEL_DEBUG=true`               | `false`                  |
+| `xrayPropagation` | —                               | `false`                  |
+| `views` / `defaultViews` | —                        | built-in histogram views |
+| `telemetryMetrics`| —                               | `false`                  |
+| `debug`           | `OTEL_DEBUG=true` (register), else `OTEL_LOG_LEVEL` | off  |
+
+`withObservability(handler, opts)` per-handler options:
+
+| Option | Default | What it does |
+|---|---|---|
+| `timeoutMarginMs` | `500` | Fire timeout capture this many ms before the deadline; `false` disables |
+| `flushTimeoutMs` | `5000` | Cap on the post-invocation flush; also bounded by remaining time |
+| `httpErrorStatus` | `true` | Returned `statusCode >= 500` on http triggers is an error |
+| `experimentalAttributes` | `true` | FaaS/messaging semconv enrichment + batch links |
+| `extractCarrier` | `event.headers` | Where inbound trace context comes from (keys case-insensitive) |
+| `requestHook` / `responseHook` | — | Annotate the root span; errors swallowed |
+| `spanName` | function name | Root span name |
 
 ### Custom metrics API
 
@@ -175,19 +208,41 @@ cached by name, so call it from anywhere without holding references.
 
 | Call | Instrument | Use for |
 |---|---|---|
-| `metrics.count(name, value = 1, attrs?)` | Counter (monotonic) | events: orders created, retries, cache misses |
-| `metrics.record(name, value, attrs?)` | Histogram | distributions: latency, payload size, batch size |
-| `metrics.gauge(name, value, attrs?)` | Gauge | point-in-time values: queue depth, pool size |
+| `metrics.count(name, value = 1, attrs?, opts?)` | Counter (monotonic) | events: orders created, retries, cache misses |
+| `metrics.record(name, value, attrs?, opts?)` | Histogram | distributions: latency, payload size, batch size |
+| `metrics.gauge(name, value, attrs?, opts?)` | Gauge | point-in-time values: queue depth, pool size |
 
 ```ts
 metrics.count('orders.created', 1, { currency: 'AUD' });
-metrics.record('fx.quote_latency_ms', 42, { provider: 'xe' });
+metrics.record('fx.quote_latency', 0.042, { provider: 'xe' }, { unit: 's' });
 metrics.gauge('worker.queue_depth', 17);
 ```
 
-Naming: dotted lowercase (`domain.thing`), unit in the name if not obvious
-(`_ms`, `_bytes`). Attributes become dimensions/tags on the backend, so keep
+`opts` is `{ unit?, description? }` and applies when the instrument is first
+created (instruments are cached by name). Units are UCUM as OTel expects:
+`'s'`, `'ms'`, `'By'`, `'{request}'`. Naming: dotted lowercase
+(`domain.thing`). Attributes become dimensions/tags on the backend, so keep
 cardinality low (no user IDs, request IDs, timestamps).
+
+**Histogram buckets.** OTel's default explicit buckets (`0, 5, 10, 25 … 10000`)
+are sized for milliseconds. The package registers Views that give its own
+`faas.*_duration` / `aws.lambda.*_duration` histograms seconds-scale buckets
+(5 ms → 15 min) and `faas.mem_usage` an exponential histogram. For your own
+`record()` histograms, either record in the unit the default buckets fit
+(milliseconds) or add a View:
+
+```ts
+import { AggregationType } from '@opentelemetry/sdk-metrics';
+initObservability({
+  views: [{
+    instrumentName: 'fx.quote_latency',
+    aggregation: { type: AggregationType.EXPLICIT_BUCKET_HISTOGRAM, options: { boundaries: [0.01, 0.05, 0.1, 0.5, 1] } },
+  }],
+});
+```
+
+Datadog converts OTLP histograms to distributions and ignores buckets, so this
+only matters on Prometheus-style backends (Grafana Cloud, Mimir, etc).
 
 ### Sampling
 
@@ -202,30 +257,50 @@ Metrics are never sampled.
 
 ### Flush cost and Lambda timeouts
 
-Every invocation ends with a synchronous OTLP export (`finally` block). With a
-sidecar collector on localhost this is single-digit milliseconds; against a
-remote endpoint it is a real network round-trip added to billed duration. The
-exporter timeout is not tied to `context.getRemainingTimeInMillis()`, so keep it
-well below your function timeout:
+Every invocation ends with an OTLP export (`finally` block). With a sidecar
+collector on localhost this is single-digit milliseconds; against a remote
+endpoint it is a real network round-trip added to billed duration.
+
+The wait is bounded: `min(flushTimeoutMs, remainingTime - 100ms)`, default cap
+5 s. Past that the handler returns and the exporters keep going in the
+background (finishing on the next warm invoke, or lost at freeze) with a
+`flush abandoned` warning. Tune the cap per handler, and keep the exporter's
+own timeout below it so a dead endpoint fails fast instead of eating the budget:
 
 ```
 OTEL_EXPORTER_OTLP_TIMEOUT=2000   # ms, default 10000
 ```
 
-A flush that fails or times out is logged and swallowed — it never changes the
-handler's result.
+A flush that fails or is abandoned is logged and swallowed — it never changes
+the handler's result.
 
-Emitted automatically: metrics `faas.coldstarts`, `faas.invocations`,
-`faas.errors`, `faas.invoke_duration` (histogram, seconds), and
-`faas.init_duration` (histogram, seconds — recorded on cold start from
-`process.uptime()`); plus a root span carrying `faas.coldstart`,
-`faas.invocation_id`, and the trigger-derived attributes described above.
+**Timeout capture.** Lambda kills the process at the deadline; a plain
+`finally` never runs, so the slowest invocations — the ones you want traced —
+would vanish. The wrapper arms a timer at `remaining - timeoutMarginMs`
+(default 500 ms). When it fires:
 
-> The richer FaaS metrics that need the Lambda Telemetry API — `faas.mem_usage`,
-> `faas.cpu_usage`, `faas.net_io`, `faas.timeouts`, and the platform's *billed*
-> duration — cannot be measured from inside the handler. They require a Lambda
-> extension (e.g. the OTel Collector layer) and are out of scope for this
-> in-process package.
+- the root span gets `error.type=timeout`, an ERROR status, and a
+  `lambda.timeout_imminent` event, and is ended;
+- `faas.timeouts` and `faas.errors{error.type=timeout}` are counted,
+  `faas.invoke_duration` is recorded;
+- everything is flushed with whatever budget the margin leaves.
+
+The handler itself is not interrupted. If it finishes inside the margin its
+result is still returned (the span is already closed as a timeout — widen or
+narrow the margin to taste). Set `timeoutMarginMs: false` to disable.
+
+**Emitted automatically.** Metrics: `faas.coldstarts`, `faas.invocations`,
+`faas.errors` (attribute `error.type` = exception class, HTTP status code, or
+`timeout`), `faas.timeouts`, `faas.invoke_duration` (histogram, seconds), and
+`faas.init_duration` (histogram, seconds — `process.uptime()` at the first
+invoke, i.e. the Node process's share of init; enable `telemetryMetrics` for the
+platform's full number). Root span: `faas.coldstart`, `faas.invocation_id`,
+`http.response.status_code` for http triggers, `error.type` on failure, and
+the trigger-derived attributes described above.
+
+> `faas.mem_usage`, the platform's *billed* and *init* duration, and SnapStart
+> restore time only exist in the Lambda Telemetry API. See *Platform metrics*
+> below for the in-process extension or the Collector layer.
 
 ## Custom carrier extraction (SQS / EventBridge)
 
@@ -246,6 +321,34 @@ it for one-context sources (a single SQS message, an HTTP request). For SQS/SNS
 **batches**, the wrapper already adds one **span link per record** automatically
 (pulled from each message's `traceparent`), which is the spec-correct way to tie a
 batch back to many producers. You don't need `extractCarrier` for the links.
+
+Carrier keys are lowercased before extraction, so `Traceparent` from an API
+Gateway REST (v1) event — which preserves the client's header casing — works.
+
+### AWS X-Ray
+
+If API Gateway / ALB / EventBridge active tracing is on, or upstream services
+emit X-Ray context, turn on `xrayPropagation` and install the optional peer:
+
+```bash
+npm install @opentelemetry/propagator-aws-xray
+```
+
+```ts
+initObservability({ xrayPropagation: true });
+```
+
+Then:
+
+| Source | Becomes |
+|---|---|
+| `X-Amzn-Trace-Id` request header | root span **parent** (same trace as the X-Ray segment) |
+| `_X_AMZN_TRACE_ID` env var (set by Lambda on every invoke) | span **link** |
+| SQS record `attributes.AWSTraceHeader` | one span **link** per record (when no `traceparent`) |
+
+The env var is deliberately a link, never a parent: Lambda populates it with
+`Sampled=0` whenever active tracing is off, and a non-sampled parent would make
+the default `parentbased` sampler drop the entire trace.
 
 ## Capturing payloads and per-invocation context (hooks)
 
@@ -341,12 +444,13 @@ initObservability({
 });
 ```
 
-## Platform metrics — max memory, billed/restore duration, timeouts
+## Platform metrics — max memory, init/billed/restore duration
 
 Some metrics aren't measurable from inside the handler — max memory used, billed
-duration, SnapStart restore duration, and timeouts only exist in the Lambda
-**Telemetry API**'s `platform.report` event, which is delivered to an extension,
-not to your code. There are two ways to get them, and they're complementary.
+duration, the platform's full init duration (extensions included), and SnapStart
+restore duration only exist in the Lambda **Telemetry API**'s `platform.report`
+/ `platform.initReport` events, which are delivered to an extension, not to your
+code. There are two ways to get them, and they're complementary.
 
 ### Recommended for production: the OTel Collector layer
 
@@ -365,9 +469,13 @@ the platform stream, and emits:
 | Metric | Unit | Source |
 |---|---|---|
 | `faas.mem_usage` | bytes | `maxMemoryUsedMB` |
-| `faas.timeouts` | count | report `status === 'timeout'` |
+| `aws.lambda.init_duration` | seconds | `platform.initReport` `durationMs` — runtime + extensions + module load |
 | `aws.lambda.billed_duration` | seconds | `billedDurationMs` |
 | `aws.lambda.restore_duration` | seconds | SnapStart `restoreDurationMs` |
+
+`faas.timeouts` is **not** emitted here: the handler wrapper counts timeouts
+itself (see *Flush cost and Lambda timeouts*), which sees them before the
+sandbox dies and avoids double counting.
 
 ```ts
 initObservability({ telemetryMetrics: true }); // requires metrics enabled
@@ -562,9 +670,15 @@ alternative is [otel-desktop-viewer](https://github.com/CtrlSpice/otel-desktop-v
 | Handler slower by ~exporter timeout | Remote collector unreachable, flush waits for timeout | Lower `OTEL_EXPORTER_OTLP_TIMEOUT`, or use a sidecar layer |
 | Inbound trace not linked (new trace per request) | No `traceparent` in `event.headers`, or non-HTTP source | Confirm the caller propagates W3C context; for SQS/EventBridge use `extractCarrier` or rely on batch span links |
 | Cold-start metric never `true` | Warm sandbox reused across test invokes | Expected; deploy a new version or wait for a fresh sandbox |
+| ESM handler: root span only, `pg`/`http` children missing | `--require` used with an ESM bundle, so the ESM loader hook is not installed | Use `NODE_OPTIONS=--import lambda-otel/register` |
+| Spans end early with `error.type=timeout` but the handler completed | `timeoutMarginMs` larger than the handler's tail latency | Lower the margin, raise the function timeout, or set `timeoutMarginMs: false` |
+| `flush abandoned after Nms` warnings | Endpoint slower than `flushTimeoutMs` / remaining time | Lower `OTEL_EXPORTER_OTLP_TIMEOUT`, raise `flushTimeoutMs`, or use a sidecar |
+| p50/p99 of `faas.invoke_duration` look flat on Grafana/Prometheus | Custom histogram recorded in seconds against default ms buckets | Built-in `faas.*` histograms already have seconds buckets; add a View for your own (see *Custom metrics API*) |
+| Traces not joined to X-Ray / API Gateway active tracing | `xrayPropagation` off or peer missing | `initObservability({ xrayPropagation: true })` + install `@opentelemetry/propagator-aws-xray` |
 
-Set `OTEL_DEBUG=true` to get the OTel diagnostic logger at debug level; it prints
-every export attempt and its result.
+Set `OTEL_DEBUG=true` (with the `register` preload) or the standard
+`OTEL_LOG_LEVEL=debug` to get the OTel diagnostic logger; it prints every export
+attempt and its result.
 
 ## Compatibility & maintenance
 
@@ -576,7 +690,12 @@ issue users hit, so each release of this package targets one generation:
 
 | This package | `@opentelemetry/api` | Stable SDK (`sdk-*`, `resources`) | Experimental (`exporter-*`, `instrumentation-*`) |
 |--------------|----------------------|-----------------------------------|--------------------------------------------------|
+| 0.2.x        | ^1.9                 | ^2.0                              | ^0.219 / ^0.74 (aws-sdk) / ^0.71 (pg, optional)  |
 | 0.1.x        | ^1.9                 | ^2.0                              | ^0.219 / ^0.74 (aws-sdk) / ^0.71 (pg)            |
+
+`@opentelemetry/instrumentation-pg` is an `optionalDependency`: installed by
+default, but a project without Postgres can drop it (`npm install
+--omit=optional`, or an override) and the default instrumentation set skips it.
 
 If you bump one OTel package, bump them together. `package.json` `overrides`
 force a single copy of the stable packages to prevent duplicate-version drift.
@@ -584,20 +703,26 @@ force a single copy of the stable packages to prevent duplicate-version drift.
 ## Testing
 
 ```bash
-npm test   # tsx --test test/*.test.ts
+npm test   # builds, then tsx --test test/*.test.ts
 ```
 
 Tests inject in-memory exporters via `initObservability({ traceExporter, metricReader })`
-and assert on emitted spans and metrics — no live collector required.
+and assert on emitted spans and metrics — no live collector required. The
+preload tests spawn `node --import` / `--require lambda-otel/register` against
+the built `dist/`, resolving the package through its own `exports` map exactly
+as a consumer would. CI (`.github/workflows/ci.yml`) runs lint, tests, and
+`npm audit` on Node 18/20/22.
 
 ## Publishing
 
 ```bash
-npm login
-npm publish            # prepublishOnly runs the build
+npm version patch|minor   # commits "chore: release vX.Y.Z" and tags vX.Y.Z
+git push --follow-tags    # the tag triggers .github/workflows/publish.yml
 ```
 
-`publishConfig.provenance` is `false` because provenance needs an OIDC-capable CI
-runner (GitHub Actions). To publish with provenance from CI, run
-`npm publish --provenance` there and switch the package to npm trusted publishing
-once the first version exists.
+The workflow runs the tests, checks the tag matches `package.json`, and runs
+`npm publish --provenance` so npm shows the package as built from this repo and
+commit. One-time setup: add an npm Automation token as the `NPM_TOKEN` repo
+secret (or configure npm Trusted Publishing for the workflow and drop the token).
+Publishing locally still works (`npm publish --otp=<code>`) but carries no
+provenance.

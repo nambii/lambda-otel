@@ -7,6 +7,7 @@ import {
   type Sampler,
   type SpanProcessor,
 } from '@opentelemetry/sdk-trace-base';
+import { diag, type DiagLogger } from '@opentelemetry/api';
 import { initObservability, withObservability, parseResourceAttributesEnv, trace } from '../src/index';
 
 // Own process, own init: resource attributes come from env + config here.
@@ -42,9 +43,20 @@ initObservability({
   sampler: dropSampler,
 });
 
+const warnings: string[] = [];
+const captureLogger: DiagLogger = {
+  verbose() {},
+  debug() {},
+  info() {},
+  warn: (msg: string) => warnings.push(msg),
+  error: (msg: string) => warnings.push(msg),
+};
+diag.setLogger(captureLogger);
+
 beforeEach(() => {
   spanExporter.reset();
   endedNames.length = 0;
+  warnings.length = 0;
 });
 
 function spans(): ReadableSpan[] {
@@ -91,4 +103,14 @@ test('sampler is honored', async () => {
 
   const names = spans().map((s) => s.name).sort();
   assert.deepEqual(names, ['keep-me', 'lambda.invoke']);
+});
+
+test('a second initObservability call with config warns and is ignored; an empty call is silent', () => {
+  initObservability({ redact: { dropAttributes: ['x'] }, serviceName: 'late' });
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /already initialized/);
+  assert.match(warnings[0], /\[redact, serviceName\]/);
+
+  initObservability();
+  assert.equal(warnings.length, 1);
 });

@@ -107,7 +107,18 @@ export function metricsConfigViews(config: MetricsConfig | undefined): ViewOptio
 }
 
 export function initObservability(config: ObservabilityConfig = {}): void {
-  if (initialized) return;
+  if (initialized) {
+    // Typical cause: the preload already initialized, and the handler module
+    // calls init again with options that will never apply. Say so.
+    if (Object.keys(config).length > 0) {
+      diag.warn(
+        'lambda-otel: initObservability() called again with config after the SDK was already ' +
+          `initialized; ignoring keys [${Object.keys(config).join(', ')}]. Put all options in the ` +
+          'first call (your preload), or drop the second call.',
+      );
+    }
+    return;
+  }
   initialized = true;
 
   // Diagnostics: explicit debug wins, else honor OTEL_LOG_LEVEL.

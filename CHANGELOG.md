@@ -23,6 +23,8 @@ Capture controls (all opt-in):
 
 Behavior changes (minor bump; all defaults are on):
 
+- **Second `initObservability()` call with options now warns** instead of
+  silently ignoring them (the SDK is still initialized exactly once).
 - **`sampler` and `spanProcessors`** config passthrough, for programmatic
   sampling, a second exporter, baggage-to-attributes or tail sampling without
   bypassing `initObservability`.

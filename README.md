@@ -767,6 +767,7 @@ alternative is [otel-desktop-viewer](https://github.com/CtrlSpice/otel-desktop-v
 | Handler slower by ~exporter timeout | Remote collector unreachable, flush waits for timeout | Lower `OTEL_EXPORTER_OTLP_TIMEOUT`, or use a sidecar layer |
 | Inbound trace not linked (new trace per request) | No `traceparent` in `event.headers`, or non-HTTP source | Confirm the caller propagates W3C context; for SQS/EventBridge use `extractCarrier` or rely on batch span links |
 | Cold-start metric never `true` | Warm sandbox reused across test invokes | Expected; deploy a new version or wait for a fresh sandbox |
+| `initObservability() called again with config` warning | Preload already initialized; a later call in the handler module carries options that never apply | Move every option into the preload's call (see `examples/instrument.ts`), or drop the second call |
 | ESM handler: root span only, `pg`/`http` children missing | `--require` used with an ESM bundle, so the ESM loader hook is not installed | Use `NODE_OPTIONS=--import lambda-otel/register` |
 | Spans end early with `error.type=timeout` but the handler completed | `timeoutMarginMs` larger than the handler's tail latency | Lower the margin, raise the function timeout, or set `timeoutMarginMs: false` |
 | `flush abandoned after Nms` warnings | Endpoint slower than `flushTimeoutMs` / remaining time | Lower `exporterTimeoutMillis`, raise `flushTimeoutMs`, or use a sidecar |

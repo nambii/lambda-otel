@@ -23,6 +23,10 @@ Capture controls (all opt-in):
 
 Behavior changes (minor bump; all defaults are on):
 
+- **OTLP exporter timeout defaults to 3 s** (`exporterTimeoutMillis`) instead
+  of OTel's 10 s, so a dead endpoint fails inside the flush cap. Standard
+  `OTEL_EXPORTER_OTLP[_<SIGNAL>]_TIMEOUT` env vars still take precedence.
+
 - **Timeout capture.** `withObservability` arms a timer at
   `remaining - timeoutMarginMs` (default 500 ms). On fire the root span is
   ended with ERROR / `error.type=timeout`, `faas.timeouts` and `faas.errors`

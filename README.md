@@ -183,6 +183,7 @@ handler `import`s are never patched and you would see only the root span.
 | `serviceVersion`  | fn version                      | —                        |
 | `environment`     | `DEPLOYMENT_ENV`                | —                        |
 | `otlpEndpoint`    | `OTEL_EXPORTER_OTLP_ENDPOINT`   | `http://localhost:4318`  |
+| `exporterTimeoutMillis` | `OTEL_EXPORTER_OTLP[_<SIGNAL>]_TIMEOUT` | `3000`         |
 | `instrumentations`| —                               | http, undici, aws-sdk, pg |
 | `instrumentationConfig` | —                         | upstream defaults        |
 | `redact`          | —                               | off                      |
@@ -267,11 +268,16 @@ endpoint it is a real network round-trip added to billed duration.
 The wait is bounded: `min(flushTimeoutMs, remainingTime - 100ms)`, default cap
 5 s. Past that the handler returns and the exporters keep going in the
 background (finishing on the next warm invoke, or lost at freeze) with a
-`flush abandoned` warning. Tune the cap per handler, and keep the exporter's
-own timeout below it so a dead endpoint fails fast instead of eating the budget:
+`flush abandoned` warning.
+
+The exporters' own per-request timeout defaults to **3 s** (OTel's own default
+is 10 s, which would exceed the flush cap and turn a dead endpoint into a 5 s
+stall plus a warning on every invoke). Override with `exporterTimeoutMillis`
+in code, or with the standard env vars, which take precedence when set:
 
 ```
-OTEL_EXPORTER_OTLP_TIMEOUT=2000   # ms, default 10000
+OTEL_EXPORTER_OTLP_TIMEOUT=2000            # ms, all signals
+OTEL_EXPORTER_OTLP_METRICS_TIMEOUT=1000    # per signal
 ```
 
 A flush that fails or is abandoned is logged and swallowed — it never changes
@@ -746,7 +752,7 @@ alternative is [otel-desktop-viewer](https://github.com/CtrlSpice/otel-desktop-v
 | Cold-start metric never `true` | Warm sandbox reused across test invokes | Expected; deploy a new version or wait for a fresh sandbox |
 | ESM handler: root span only, `pg`/`http` children missing | `--require` used with an ESM bundle, so the ESM loader hook is not installed | Use `NODE_OPTIONS=--import lambda-otel/register` |
 | Spans end early with `error.type=timeout` but the handler completed | `timeoutMarginMs` larger than the handler's tail latency | Lower the margin, raise the function timeout, or set `timeoutMarginMs: false` |
-| `flush abandoned after Nms` warnings | Endpoint slower than `flushTimeoutMs` / remaining time | Lower `OTEL_EXPORTER_OTLP_TIMEOUT`, raise `flushTimeoutMs`, or use a sidecar |
+| `flush abandoned after Nms` warnings | Endpoint slower than `flushTimeoutMs` / remaining time | Lower `exporterTimeoutMillis`, raise `flushTimeoutMs`, or use a sidecar |
 | p50/p99 of `faas.invoke_duration` look flat on Grafana/Prometheus | Custom histogram recorded in seconds against default ms buckets | Built-in `faas.*` histograms already have seconds buckets; add a View for your own (see *Custom metrics API*) |
 | Traces not joined to X-Ray / API Gateway active tracing | `xrayPropagation` off or peer missing | `initObservability({ xrayPropagation: true })` + install `@opentelemetry/propagator-aws-xray` |
 | SQL text / auth headers showing up in a vendor UI | Instrumentation sets them by default | `redact.dropAttributes: ['db.query.text', 'http.request.header.*']`, or per-library options via `instrumentationConfig` |

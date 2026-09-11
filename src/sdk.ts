@@ -36,6 +36,28 @@ let meterProvider: MeterProvider | undefined;
 let loggerProvider: LoggerProvider | undefined;
 let initialized = false;
 
+/** Default OTLP request timeout; the upstream default (10 s) exceeds the flush cap. */
+export const DEFAULT_EXPORTER_TIMEOUT_MS = 3_000;
+
+type Signal = 'traces' | 'metrics' | 'logs';
+
+/**
+ * Exporter timeout to pass explicitly, or undefined to let the exporter read
+ * its env vars. Explicit config wins; any relevant env var defers to the
+ * exporter; otherwise the package default applies.
+ */
+export function resolveExporterTimeout(
+  signal: Signal,
+  config: Pick<ObservabilityConfig, 'exporterTimeoutMillis'>,
+  env: NodeJS.ProcessEnv = process.env,
+): number | undefined {
+  if (config.exporterTimeoutMillis !== undefined) return config.exporterTimeoutMillis;
+  if (env[`OTEL_EXPORTER_OTLP_${signal.toUpperCase()}_TIMEOUT`] || env.OTEL_EXPORTER_OTLP_TIMEOUT) {
+    return undefined;
+  }
+  return DEFAULT_EXPORTER_TIMEOUT_MS;
+}
+
 /**
  * Seconds-scale buckets for Lambda durations. The OTel default boundaries
  * (0, 5, 10, 25 … 10000) are sized for milliseconds; every second-valued
@@ -104,10 +126,14 @@ export function initObservability(config: ObservabilityConfig = {}): void {
   // ENDPOINT, *_HEADERS) and finally to http://localhost:4318. This is what lets
   // you point at Grafana / Sentry / Datadog purely via env, no code change.
   const base = config.otlpEndpoint?.replace(/\/+$/, '');
-  const otlpArgs = (signal: 'traces' | 'metrics' | 'logs') => ({
-    ...(base ? { url: `${base}/v1/${signal}` } : {}),
-    ...(config.headers ? { headers: config.headers } : {}),
-  });
+  const otlpArgs = (signal: Signal) => {
+    const timeoutMillis = resolveExporterTimeout(signal, config);
+    return {
+      ...(base ? { url: `${base}/v1/${signal}` } : {}),
+      ...(config.headers ? { headers: config.headers } : {}),
+      ...(timeoutMillis !== undefined ? { timeoutMillis } : {}),
+    };
+  };
 
   // Redaction wraps whichever exporters end up in use (OTLP or injected).
   const redactor = buildRedactor(config.redact);

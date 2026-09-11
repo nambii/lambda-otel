@@ -99,6 +99,14 @@ export interface ObservabilityConfig {
   otlpEndpoint?: string;
   /** Headers applied to all OTLP exporters (e.g. auth). Env vars work too. */
   headers?: Record<string, string>;
+  /**
+   * Per-request timeout for the OTLP exporters, in ms. Defaults to 3000 —
+   * well under the 5 s flush cap, so a dead endpoint fails fast instead of
+   * eating the whole flush budget every invoke. Ignored when
+   * `OTEL_EXPORTER_OTLP_TIMEOUT` or a per-signal `OTEL_EXPORTER_OTLP_<SIGNAL>_TIMEOUT`
+   * env var is set (those take over, per the OTel spec).
+   */
+  exporterTimeoutMillis?: number;
   /** Emit FaaS + custom metrics. Default true. Set false for metrics-less backends (e.g. Sentry). */
   metrics?: boolean;
   /**

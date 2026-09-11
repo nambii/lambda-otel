@@ -70,7 +70,9 @@ Behavior changes (minor bump; all defaults are on):
 - `OTEL_LOG_LEVEL` honored when `debug` is not set.
 - `@opentelemetry/instrumentation-pg` is now an `optionalDependency`
   (still installed by default). `@opentelemetry/core` added as a dependency.
-- CI (Node 18/20/22) and a tag-triggered publish workflow with npm provenance.
+- CI (Node 18/20/22), Dependabot, and a tag-triggered publish workflow with
+  npm provenance. Node 18 support is scheduled to end with 1.0.
+- README gained a table of contents.
 
 ## 0.1.2
 

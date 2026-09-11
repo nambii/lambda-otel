@@ -12,6 +12,9 @@ import type { UndiciInstrumentationConfig } from '@opentelemetry/instrumentation
  * Structural mirror of `KoaInstrumentationConfig` so the type does not leak a
  * dependency on the optional `@opentelemetry/instrumentation-koa` package into
  * consumers' type-checks. Same keys, same meaning.
+ *
+ * Mirrors @opentelemetry/instrumentation-koa 0.67.x. When bumping that peer,
+ * diff its `types.d.ts` against this and update both together.
  */
 export interface KoaInstrumentationConfigLike {
   /** Layer kinds to skip. `'middleware'` drops the noisy per-middleware spans. */

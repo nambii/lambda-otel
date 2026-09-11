@@ -7,6 +7,38 @@ Sentry, or other vendor exporter — the backend is decided entirely by the
 collector you point it at. Switching backends is a config change, never a
 republish.
 
+## Contents
+
+- [What it does that the raw SDK / ADOT layer don't](#what-it-does-that-the-raw-sdk--adot-layer-dont)
+- [Quick start (integration checklist)](#quick-start-integration-checklist)
+- [Install](#install)
+- [Usage](#usage)
+- [Deployment topologies (both vendor-neutral)](#deployment-topologies-both-vendor-neutral)
+- [The esbuild / SST caveat (important)](#the-esbuild--sst-caveat-important)
+- [Configuration](#configuration)
+  - [Custom metrics API](#custom-metrics-api)
+  - [Sampling and extra span processors](#sampling-and-extra-span-processors)
+  - [Flush cost and Lambda timeouts](#flush-cost-and-lambda-timeouts)
+- [Custom carrier extraction (SQS / EventBridge)](#custom-carrier-extraction-sqs--eventbridge)
+  - [AWS X-Ray](#aws-x-ray)
+- [Capturing payloads and per-invocation context (hooks)](#capturing-payloads-and-per-invocation-context-hooks)
+- [Using with Middy (or any other wrapper)](#using-with-middy-or-any-other-wrapper)
+- [Controlling what gets captured](#controlling-what-gets-captured)
+  - [Per-instrumentation options (`instrumentationConfig`)](#per-instrumentation-options-instrumentationconfig)
+  - [Attribute redaction (`redact`)](#attribute-redaction-redact)
+  - [Custom metric filtering (`metricsConfig`)](#custom-metric-filtering-metricsconfig)
+- [Logs (trace correlation + optional forwarding)](#logs-trace-correlation--optional-forwarding)
+- [Platform metrics — max memory, init/billed/restore duration](#platform-metrics--max-memory-initbilledrestore-duration)
+  - [Recommended for production: the OTel Collector layer](#recommended-for-production-the-otel-collector-layer)
+  - [Lightweight / dev: the in-process extension (experimental)](#lightweight--dev-the-in-process-extension-experimental)
+- [Examples](#examples)
+- [Sending to a backend](#sending-to-a-backend)
+- [Local development](#local-development)
+- [Troubleshooting](#troubleshooting)
+- [Compatibility & maintenance](#compatibility--maintenance)
+- [Testing](#testing)
+- [Publishing](#publishing)
+
 ## What it does that the raw SDK / ADOT layer don't
 
 - **Force-flushes traces *and* metrics on every invocation, with a deadline.**
@@ -484,7 +516,8 @@ initObservability({
 ```
 
 `dropAttributes` takes exact keys or `*` wildcards and runs first; `attribute`
-sees everything that survives. Attributes are edited in place, so every
+sees everything that survives. It is called once per attribute per span, so
+keep it cheap — key comparisons and `startsWith`, not regexes over values. Attributes are edited in place, so every
 exporter downstream sees the redacted view. A custom `logRecordProcessor`
 bypasses the log half — wrap your own exporter with `RedactingLogRecordExporter`
 in that case.
@@ -800,6 +833,9 @@ default, but a project without Postgres can drop it (`npm install
 
 If you bump one OTel package, bump them together. `package.json` `overrides`
 force a single copy of the stable packages to prevent duplicate-version drift.
+
+**Node.js:** 18, 20 and 22 are tested in CI. Node 18 reached end-of-life in
+April 2025 and the ESM preload needs 18.19+; support for it ends with 1.0.
 
 ## Testing
 

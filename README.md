@@ -400,13 +400,17 @@ Then:
 
 | Source | Becomes |
 |---|---|
-| `X-Amzn-Trace-Id` request header | root span **parent** (same trace as the X-Ray segment) |
+| `X-Amzn-Trace-Id` request header, `Sampled=1` | root span **parent** (same trace as the X-Ray segment) |
+| `X-Amzn-Trace-Id` request header, `Sampled=0` | span **link** |
 | `_X_AMZN_TRACE_ID` env var (set by Lambda on every invoke) | span **link** |
 | SQS record `attributes.AWSTraceHeader` | one span **link** per record (when no `traceparent`) |
 
-The env var is deliberately a link, never a parent: Lambda populates it with
-`Sampled=0` whenever active tracing is off, and a non-sampled parent would make
-the default `parentbased` sampler drop the entire trace.
+Unsampled X-Ray context is deliberately a link, never a parent. X-Ray's own
+sampler declines most requests (default: 1 req/s plus 5 %), and Lambda sets
+the env var with `Sampled=0` whenever active tracing is off; as a parent,
+either would make the default `parentbased` sampler drop the entire OTel
+trace. A W3C `traceparent` with the sampled flag off is different: that is an
+upstream OpenTelemetry decision and is honored.
 
 ## Capturing payloads and per-invocation context (hooks)
 

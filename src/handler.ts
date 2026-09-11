@@ -11,7 +11,7 @@ import {
 import { flush } from './sdk';
 import { metrics } from './metrics';
 import { detectTrigger, lambdaContextAttributes, type TriggerInfo } from './triggers';
-import { normalizeCarrier, xrayEnvLink } from './propagation';
+import { normalizeCarrier, xrayEnvLink, XRAY_HEADER } from './propagation';
 
 const TRACER_NAME = 'lambda-otel';
 
@@ -114,9 +114,20 @@ export function withObservability<E = any, R = any>(
     const trigger = detectTrigger(event);
 
     const carrier = normalizeCarrier(opts.extractCarrier?.(event) ?? (event as any)?.headers);
-    const parentCtx = propagation.extract(context.active(), carrier);
-
+    let parentCtx = propagation.extract(context.active(), carrier);
     const links: Link[] = enrich ? [...trigger.links] : [];
+
+    // An X-Ray header with Sampled=0 is X-Ray's own sampler declining (its
+    // default keeps ~1 req/s + 5%); it must not become an unsampled parent that
+    // makes the ParentBased sampler drop our whole trace. Keep the join as a
+    // link instead. A W3C traceparent with the sampled flag off is different:
+    // that is the upstream OTel decision and is honored as a parent.
+    const parent = trace.getSpanContext(parentCtx);
+    if (parent && !(parent.traceFlags & 1) && carrier[XRAY_HEADER] && !carrier.traceparent) {
+      links.push({ context: parent });
+      parentCtx = context.active();
+    }
+
     // Join the X-Ray segment by link when nothing upstream gave us a parent.
     if (!trace.getSpanContext(parentCtx)) {
       const xray = xrayEnvLink();

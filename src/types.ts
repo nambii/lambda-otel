@@ -155,11 +155,12 @@ export interface ObservabilityConfig {
    * Also understand AWS X-Ray trace context: the `X-Amzn-Trace-Id` header
    * (API Gateway / ALB with active tracing), the SQS `AWSTraceHeader` system
    * attribute, and the `_X_AMZN_TRACE_ID` env var Lambda sets per invocation.
-   * Inbound X-Ray context from headers becomes the root span's parent; the env
-   * var and SQS attribute become span *links* (never a parent — Lambda sets the
-   * env var with `Sampled=0` whenever active tracing is off, and a non-sampled
-   * parent would drop the whole trace). Requires the optional peer
-   * `@opentelemetry/propagator-aws-xray`. Default false.
+   * A *sampled* inbound X-Ray header becomes the root span's parent. An
+   * unsampled one (`Sampled=0`, X-Ray's own sampler declining), the env var,
+   * and the SQS attribute become span *links* — never a parent, because a
+   * non-sampled parent would make the default ParentBased sampler drop the
+   * whole trace. Requires the optional peer `@opentelemetry/propagator-aws-xray`.
+   * Default false.
    */
   xrayPropagation?: boolean;
   /** Advanced: replace the global propagator entirely (overrides xrayPropagation). */

@@ -237,6 +237,17 @@ test('X-Ray: inbound header becomes the parent, env var becomes a link, SQS AWST
   assert.equal(spans()[0].spanContext().traceId, otelTraceId);
   assert.equal(spans()[0].parentSpanContext?.spanId, '53995c3f42cd8ad8');
 
+  // Header with Sampled=0 (X-Ray's sampler declined) → link, never an unsampled parent.
+  await withObservability(async () => null)(
+    { httpMethod: 'GET', resource: '/x', headers: { 'X-Amzn-Trace-Id': `Root=${xrayTrace};Parent=cccccccccccccccc;Sampled=0` } },
+    ctx({ awsRequestId: 'req-xray-unsampled' }),
+  );
+  const unsampled = spans()[1];
+  assert.notEqual(unsampled.spanContext().traceId, otelTraceId);
+  assert.equal(unsampled.parentSpanContext, undefined);
+  assert.equal(unsampled.links[0]?.context.spanId, 'cccccccccccccccc');
+  assert.equal(unsampled.spanContext().traceFlags & 1, 1, 'still sampled and exported');
+
   // Env var (Lambda sets it on every invoke, Sampled=0 without active tracing) → link only, never a parent.
   process.env._X_AMZN_TRACE_ID = `Root=${xrayTrace};Parent=aaaaaaaaaaaaaaaa;Sampled=0`;
   try {
@@ -244,7 +255,7 @@ test('X-Ray: inbound header becomes the parent, env var becomes a link, SQS AWST
   } finally {
     delete process.env._X_AMZN_TRACE_ID;
   }
-  const envSpan = spans()[1];
+  const envSpan = spans()[2];
   assert.notEqual(envSpan.spanContext().traceId, otelTraceId);
   assert.equal(envSpan.parentSpanContext, undefined);
   assert.equal(envSpan.links.length, 1);
@@ -263,8 +274,15 @@ test('X-Ray: inbound header becomes the parent, env var becomes a link, SQS AWST
     },
     ctx({ awsRequestId: 'req-xray-sqs' }),
   );
-  assert.equal(spans()[2].links.length, 1);
-  assert.equal(spans()[2].links[0].context.spanId, 'bbbbbbbbbbbbbbbb');
+  assert.equal(spans()[3].links.length, 1);
+  assert.equal(spans()[3].links[0].context.spanId, 'bbbbbbbbbbbbbbbb');
+
+  // A W3C traceparent with sampled=0 is an upstream OTel decision: honored as parent, span not recorded.
+  await withObservability(async () => null)(
+    { headers: { traceparent: `00-${otelTraceId}-dddddddddddddddd-00` } },
+    ctx({ awsRequestId: 'req-w3c-unsampled' }),
+  );
+  assert.equal(spans().length, 4, 'unsampled W3C parent → no exported span');
 });
 
 test('duration histograms use seconds-scale buckets and carry units', async () => {

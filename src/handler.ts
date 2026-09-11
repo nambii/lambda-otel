@@ -9,7 +9,7 @@ import {
 } from '@opentelemetry/api';
 import { flush } from './sdk';
 import { metrics } from './metrics';
-import { detectTrigger, lambdaContextAttributes } from './triggers';
+import { detectTrigger, lambdaContextAttributes, type TriggerInfo } from './triggers';
 import { normalizeCarrier } from './propagation';
 
 const TRACER_NAME = 'lambda-otel';
@@ -79,6 +79,13 @@ export interface WrapOptions {
    * the background past the cap. Default 5000.
    */
   flushTimeoutMs?: number;
+  /**
+   * For `http` triggers, treat a returned `statusCode >= 500` as a failure:
+   * ERROR status, `error.type=<code>`, and a `faas.errors` count — the same as
+   * a thrown exception. `http.response.status_code` is set either way.
+   * Default true.
+   */
+  httpErrorStatus?: boolean;
 }
 
 /**
@@ -168,7 +175,7 @@ export function withObservability<E = any, R = any>(
           try {
             const result = await handler(event, lambdaContext);
             runHook(opts.responseHook, span, { res: result });
-            if (!timedOut) span.setStatus({ code: SpanStatusCode.OK });
+            if (!timedOut) applyHttpResponse(span, trigger, result, coldStart, opts);
             return result;
           } catch (err: any) {
             runHook(opts.responseHook, span, { err });
@@ -204,6 +211,29 @@ function remainingMs(lambdaContext: LambdaContextLike | undefined): number | und
     return typeof ms === 'number' && Number.isFinite(ms) ? ms : undefined;
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * HTTP-shaped results carry the outcome in `statusCode`; a 5xx returned without
+ * throwing is still a failed invocation from the caller's point of view.
+ */
+function applyHttpResponse(
+  span: Span,
+  trigger: TriggerInfo,
+  result: unknown,
+  coldStart: boolean,
+  opts: WrapOptions,
+): void {
+  if (trigger.trigger !== 'http') return;
+  const code = (result as { statusCode?: unknown } | null)?.statusCode;
+  if (typeof code !== 'number') return;
+  span.setAttribute('http.response.status_code', code);
+  if (code >= 500 && opts.httpErrorStatus !== false) {
+    const type = String(code);
+    span.setAttribute('error.type', type);
+    span.setStatus({ code: SpanStatusCode.ERROR, message: `HTTP ${code}` });
+    metrics.count('faas.errors', 1, { 'faas.coldstart': coldStart, 'error.type': type });
   }
 }
 

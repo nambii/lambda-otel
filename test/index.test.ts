@@ -116,6 +116,11 @@ test('errors are recorded on the span and rethrown', async () => {
   assert.equal(metricSum('faas.errors'), 1);
 });
 
+test('success leaves span status UNSET (semconv), not OK', async () => {
+  await withObservability(async () => 'fine')({ headers: {} }, { awsRequestId: 'req-unset' });
+  assert.equal(spans()[0].status.code, SpanStatusCode.UNSET);
+});
+
 test('inbound headers are matched case-insensitively (API Gateway REST keeps client casing)', async () => {
   const traceId = '1af7651916cd43dd8448eb211c80319c';
   const handler = withObservability(async () => null);
@@ -124,6 +129,30 @@ test('inbound headers are matched case-insensitively (API Gateway REST keeps cli
     { awsRequestId: 'req-case' },
   );
   assert.equal(spans()[0].spanContext().traceId, traceId);
+});
+
+test('http 5xx returned without throwing is an error; 2xx just records the code', async () => {
+  const fail = withObservability(async () => ({ statusCode: 503, body: 'nope' }));
+  await fail({ httpMethod: 'GET', resource: '/x', headers: {} }, { awsRequestId: 'req-503' });
+  const ok = withObservability(async () => ({ statusCode: 201 }));
+  await ok({ httpMethod: 'POST', resource: '/x', headers: {} }, { awsRequestId: 'req-201' });
+  const off = withObservability(async () => ({ statusCode: 500 }), { httpErrorStatus: false });
+  await off({ httpMethod: 'GET', resource: '/x', headers: {} }, { awsRequestId: 'req-off' });
+
+  const [s503, s201, s500] = spans();
+  assert.equal(s503.attributes['http.response.status_code'], 503);
+  assert.equal(s503.status.code, SpanStatusCode.ERROR);
+  assert.equal(s503.attributes['error.type'], '503');
+  assert.equal(s201.attributes['http.response.status_code'], 201);
+  assert.equal(s201.status.code, SpanStatusCode.UNSET);
+  assert.equal(s500.status.code, SpanStatusCode.UNSET);
+  assert.equal(metricSum('faas.errors'), 1);
+});
+
+test('non-http triggers ignore a statusCode-shaped result', async () => {
+  await withObservability(async () => ({ statusCode: 500 }))({ Records: [{ eventSource: 'aws:sqs' }] }, ctx());
+  assert.equal(spans()[0].status.code, SpanStatusCode.UNSET);
+  assert.equal(spans()[0].attributes['http.response.status_code'], undefined);
 });
 
 test('imminent timeout ends the span as an error and counts faas.timeouts before the deadline', async () => {
@@ -158,7 +187,7 @@ test('timeout capture is skipped when the handler finishes in time or is disable
     await sleep(60);
     return 'slow-but-off';
   }, { timeoutMarginMs: false })({ headers: {} }, ctx({}, 80));
-  for (const s of spans()) assert.notEqual(s.status.code, SpanStatusCode.ERROR);
+  for (const s of spans()) assert.equal(s.status.code, SpanStatusCode.UNSET);
   assert.equal(metricSum('faas.timeouts'), undefined);
 });
 

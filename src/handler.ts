@@ -184,12 +184,11 @@ export function withObservability<E = any, R = any>(
           } catch (err: any) {
             runHook(opts.responseHook, span, { err });
             if (!timedOut) {
+              const type = errorType(err);
               span.recordException(err);
-              span.setStatus({
-                code: SpanStatusCode.ERROR,
-                message: err?.message,
-              });
-              metrics.count('faas.errors', 1, { 'faas.coldstart': coldStart }, { unit: '{error}' });
+              span.setAttribute('error.type', type);
+              span.setStatus({ code: SpanStatusCode.ERROR, message: err?.message });
+              metrics.count('faas.errors', 1, { 'faas.coldstart': coldStart, 'error.type': type }, { unit: '{error}' });
             }
             throw err;
           } finally {
@@ -246,6 +245,16 @@ function flushBudget(lambdaContext: LambdaContextLike | undefined, opts: WrapOpt
   const remaining = remainingMs(lambdaContext);
   if (remaining === undefined) return cap;
   return Math.min(cap, Math.max(remaining - FLUSH_HEADROOM_MS, 0));
+}
+
+/** Low-cardinality error class for `error.type`: the constructor/`name`, never the message. */
+function errorType(err: unknown): string {
+  if (err && typeof err === 'object') {
+    const name = (err as { name?: unknown }).name;
+    if (typeof name === 'string' && name) return name;
+    return err.constructor?.name || 'Error';
+  }
+  return typeof err;
 }
 
 // A user hook must never break the handler — capture is best-effort.

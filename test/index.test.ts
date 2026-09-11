@@ -112,6 +112,7 @@ test('errors are recorded on the span and rethrown', async () => {
 
   const span = spans()[0];
   assert.equal(span.status.code, SpanStatusCode.ERROR);
+  assert.equal(span.attributes['error.type'], 'Error');
   assert.ok(span.events.some((e) => e.name === 'exception'));
   assert.equal(metricSum('faas.errors'), 1);
 });

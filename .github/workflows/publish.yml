@@ -1,0 +1,41 @@
+name: Publish
+
+# Publishes to npm with provenance when a `v*` tag is pushed (what
+# `npm version <bump>` + `git push --follow-tags` produces). Provenance links
+# the published tarball to this exact commit and workflow run, so consumers
+# can verify the package was built from this repository.
+#
+# Setup (one-time): add an npm Automation token as the NPM_TOKEN repository
+# secret, or configure npm Trusted Publishing for this repo/workflow and drop
+# the NODE_AUTH_TOKEN line below.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+  id-token: write # required for --provenance
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: Check tag matches package.json version
+        run: |
+          pkg="v$(node -p "require('./package.json').version")"
+          if [ "$pkg" != "$GITHUB_REF_NAME" ]; then
+            echo "tag $GITHUB_REF_NAME does not match package.json $pkg" >&2
+            exit 1
+          fi
+      - run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

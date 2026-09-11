@@ -331,6 +331,10 @@ test('platform.report telemetry is translated into platform metrics', async () =
     type: 'platform.restoreReport',
     record: { status: 'success', metrics: { restoreDurationMs: 230 } },
   });
+  ingestTelemetryEvent({
+    type: 'platform.initReport',
+    record: { initializationType: 'on-demand', status: 'success', metrics: { durationMs: 412 } },
+  });
   // Wrong shapes must be ignored, never throw.
   ingestTelemetryEvent({ type: 'platform.start', record: {} });
   ingestTelemetryEvent(null);
@@ -341,6 +345,7 @@ test('platform.report telemetry is translated into platform metrics', async () =
   assert.ok(hasMetric('faas.mem_usage'));
   assert.ok(hasMetric('aws.lambda.billed_duration'));
   assert.ok(hasMetric('aws.lambda.restore_duration'));
+  assert.ok(hasMetric('aws.lambda.init_duration'));
   // Timeouts are the wrapper's job (it sees them before the sandbox dies).
   assert.equal(metricSum('faas.timeouts'), undefined);
 });

@@ -59,10 +59,11 @@ export interface ObservabilityConfig {
   /**
    * Experimental: register an in-process Lambda Telemetry API extension to emit
    * platform metrics the handler can't measure itself — faas.mem_usage,
-   * faas.timeouts, aws.lambda.billed_duration, aws.lambda.restore_duration.
-   * Off by default. Metrics lag one invocation and the final pre-freeze report
-   * can be lost (internal extensions get no SHUTDOWN); for production prefer the
-   * OTel Collector layer's telemetryapireceiver. Requires metrics enabled.
+   * aws.lambda.init_duration, aws.lambda.billed_duration,
+   * aws.lambda.restore_duration. Off by default. Metrics lag one invocation and
+   * the final pre-freeze report can be lost (internal extensions get no
+   * SHUTDOWN); for production prefer the OTel Collector layer's
+   * telemetryapireceiver. Requires metrics enabled.
    */
   telemetryMetrics?: boolean;
   /** Port for the telemetry listener when telemetryMetrics is on. Default 4243. */

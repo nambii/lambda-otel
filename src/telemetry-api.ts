@@ -7,10 +7,11 @@ import { metrics } from './metrics';
  *
  * Registers an *internal* Lambda extension from within the Node process, stands
  * up a local HTTP listener, subscribes to the `platform` telemetry stream, and
- * translates each `platform.report` into OTel metrics that the handler cannot
- * measure itself: max memory used, billed duration, and SnapStart restore
- * duration. Timeouts are counted by the handler wrapper (which sees them before
- * the sandbox dies), not here, so the metric is never doubled.
+ * translates each `platform.report` / `platform.initReport` into OTel metrics
+ * that the handler cannot measure itself: max memory used, billed duration,
+ * the platform's own init duration (extensions included), and SnapStart
+ * restore duration. Timeouts are counted by the handler wrapper (which sees
+ * them before the sandbox dies), not here, so the metric is never doubled.
  *
  * Caveats (see README — this is why the Collector layer is the recommended
  * production path):
@@ -91,6 +92,12 @@ export function ingestTelemetryEvent(event: unknown): void {
     // AWS-specific but the key cost signal.
     if (typeof m.billedDurationMs === 'number') {
       metrics.record('aws.lambda.billed_duration', m.billedDurationMs / 1000, undefined, { unit: 's' });
+    }
+  } else if (e.type === 'platform.initReport') {
+    // Authoritative cold-start cost: runtime + extensions + handler module load.
+    // The wrapper's faas.init_duration only sees the Node process's share.
+    if (typeof m.durationMs === 'number') {
+      metrics.record('aws.lambda.init_duration', m.durationMs / 1000, undefined, { unit: 's' });
     }
   } else if (e.type === 'platform.restoreReport') {
     if (typeof m.restoreDurationMs === 'number') {

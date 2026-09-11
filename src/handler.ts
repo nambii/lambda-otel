@@ -115,8 +115,10 @@ export function withObservability<E = any, R = any>(
 
     if (coldStart) {
       metrics.count('faas.coldstarts', 1, undefined, { unit: '{coldstart}' });
-      // process.uptime() at the first invocation ≈ init/cold-start duration.
-      // Semconv: faas.init_duration is a histogram in seconds.
+      // process.uptime() at the first invocation ≈ init/cold-start duration as
+      // seen by the Node process (runtime boot + preload + handler module load).
+      // Extension init is not included; enable telemetryMetrics for the
+      // platform's own aws.lambda.init_duration. Semconv: seconds.
       metrics.record('faas.init_duration', process.uptime(), { 'faas.coldstart': true }, { unit: 's' });
     }
     metrics.count('faas.invocations', 1, { 'faas.coldstart': coldStart }, { unit: '{invocation}' });

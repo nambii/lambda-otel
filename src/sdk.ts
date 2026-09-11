@@ -9,8 +9,10 @@ import { BatchSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
 import {
   AggregationTemporality,
+  AggregationType,
   MeterProvider,
   PeriodicExportingMetricReader,
+  type ViewOptions,
 } from '@opentelemetry/sdk-metrics';
 import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-http';
 import { registerInstrumentations } from '@opentelemetry/instrumentation';
@@ -27,6 +29,38 @@ let tracerProvider: NodeTracerProvider | undefined;
 let meterProvider: MeterProvider | undefined;
 let loggerProvider: LoggerProvider | undefined;
 let initialized = false;
+
+/**
+ * Seconds-scale buckets for Lambda durations. The OTel default boundaries
+ * (0, 5, 10, 25 … 10000) are sized for milliseconds; every second-valued
+ * Lambda invoke would land in the first bucket and percentiles would be
+ * meaningless on bucket-based backends (Prometheus / Grafana). Tops out at
+ * Lambda's 15-minute ceiling.
+ */
+export const DURATION_SECONDS_BUCKETS = [
+  0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 300, 900,
+];
+
+/** Built-in views. Exported so consumers can extend or inspect them. */
+export function defaultViews(): ViewOptions[] {
+  const seconds = (instrumentName: string): ViewOptions => ({
+    instrumentName,
+    aggregation: {
+      type: AggregationType.EXPLICIT_BUCKET_HISTOGRAM,
+      options: { boundaries: DURATION_SECONDS_BUCKETS },
+    },
+  });
+  return [
+    seconds('faas.invoke_duration'),
+    seconds('faas.init_duration'),
+    seconds('aws.lambda.init_duration'),
+    seconds('aws.lambda.billed_duration'),
+    seconds('aws.lambda.restore_duration'),
+    // Bytes span several orders of magnitude; exponential buckets fit with no
+    // hand-picked boundaries.
+    { instrumentName: 'faas.mem_usage', aggregation: { type: AggregationType.EXPONENTIAL_HISTOGRAM } },
+  ];
+}
 
 export function initObservability(config: ObservabilityConfig = {}): void {
   if (initialized) return;
@@ -72,7 +106,11 @@ export function initObservability(config: ObservabilityConfig = {}): void {
         // The timer is a fallback; real delivery happens via flush() per invocation.
         exportIntervalMillis: config.metricExportIntervalMillis ?? 60_000,
       });
-    meterProvider = new MeterProvider({ resource, readers: [reader] });
+    const views = [
+      ...(config.defaultViews !== false ? defaultViews() : []),
+      ...(config.views ?? []),
+    ];
+    meterProvider = new MeterProvider({ resource, readers: [reader], views });
     otelMetrics.setGlobalMeterProvider(meterProvider);
   }
 

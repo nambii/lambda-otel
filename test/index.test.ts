@@ -191,6 +191,19 @@ test('timeout capture is skipped when the handler finishes in time or is disable
   assert.equal(metricSum('faas.timeouts'), undefined);
 });
 
+test('duration histograms use seconds-scale buckets and carry units', async () => {
+  await withObservability(async () => null)({ headers: {} }, ctx());
+  const found = metricExporter
+    .getMetrics()
+    .flatMap((rm) => rm.scopeMetrics.flatMap((sm) => sm.metrics))
+    .find((m) => m.descriptor.name === 'faas.invoke_duration');
+  assert.ok(found);
+  assert.equal(found!.descriptor.unit, 's');
+  const dp = found!.dataPoints[0] as { value: { buckets: { boundaries: number[] } } };
+  assert.deepEqual(dp.value.buckets.boundaries.slice(0, 4), [0.005, 0.01, 0.025, 0.05]);
+  assert.equal(dp.value.buckets.boundaries.at(-1), 900);
+});
+
 test('inbound trace context is propagated into the root span', async () => {
   const traceId = '0af7651916cd43dd8448eb211c80319c';
   const parentSpanId = 'b7ad6b7169203331';

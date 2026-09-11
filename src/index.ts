@@ -1,4 +1,11 @@
-export { initObservability, flush, shutdown, isInitialized } from './sdk';
+export {
+  initObservability,
+  flush,
+  shutdown,
+  isInitialized,
+  defaultViews,
+  DURATION_SECONDS_BUCKETS,
+} from './sdk';
 export {
   withObservability,
   type WrapOptions,
@@ -14,7 +21,7 @@ export {
   isTelemetryExtensionActive,
   type TelemetryExtensionOptions,
 } from './telemetry-api';
-export { metrics } from './metrics';
+export { metrics, type InstrumentOptions } from './metrics';
 export { defaultInstrumentations } from './instrumentations';
 export type { ObservabilityConfig } from './types';
 

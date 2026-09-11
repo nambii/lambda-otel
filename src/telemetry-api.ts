@@ -86,15 +86,15 @@ export function ingestTelemetryEvent(event: unknown): void {
     // Spec metric: faas.mem_usage (bytes). Do NOT tag with requestId — that
     // would explode metric cardinality.
     if (typeof m.maxMemoryUsedMB === 'number') {
-      metrics.record('faas.mem_usage', m.maxMemoryUsedMB * MIB);
+      metrics.record('faas.mem_usage', m.maxMemoryUsedMB * MIB, undefined, { unit: 'By' });
     }
     // AWS-specific but the key cost signal.
     if (typeof m.billedDurationMs === 'number') {
-      metrics.record('aws.lambda.billed_duration', m.billedDurationMs / 1000);
+      metrics.record('aws.lambda.billed_duration', m.billedDurationMs / 1000, undefined, { unit: 's' });
     }
   } else if (e.type === 'platform.restoreReport') {
     if (typeof m.restoreDurationMs === 'number') {
-      metrics.record('aws.lambda.restore_duration', m.restoreDurationMs / 1000);
+      metrics.record('aws.lambda.restore_duration', m.restoreDurationMs / 1000, undefined, { unit: 's' });
     }
   }
 }

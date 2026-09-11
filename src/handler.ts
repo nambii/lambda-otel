@@ -114,12 +114,12 @@ export function withObservability<E = any, R = any>(
       opts.spanName ?? process.env.AWS_LAMBDA_FUNCTION_NAME ?? 'lambda.invoke';
 
     if (coldStart) {
-      metrics.count('faas.coldstarts', 1);
+      metrics.count('faas.coldstarts', 1, undefined, { unit: '{coldstart}' });
       // process.uptime() at the first invocation ≈ init/cold-start duration.
       // Semconv: faas.init_duration is a histogram in seconds.
-      metrics.record('faas.init_duration', process.uptime(), { 'faas.coldstart': true });
+      metrics.record('faas.init_duration', process.uptime(), { 'faas.coldstart': true }, { unit: 's' });
     }
-    metrics.count('faas.invocations', 1, { 'faas.coldstart': coldStart });
+    metrics.count('faas.invocations', 1, { 'faas.coldstart': coldStart }, { unit: '{invocation}' });
 
     return context.with(parentCtx, () =>
       tracer.startActiveSpan(
@@ -134,10 +134,12 @@ export function withObservability<E = any, R = any>(
             span.end();
           };
           const recordDuration = () =>
-            // Semconv: faas.invoke_duration is a histogram measured in seconds.
-            metrics.record('faas.invoke_duration', (performance.now() - startedAt) / 1000, {
-              'faas.coldstart': coldStart,
-            });
+            metrics.record(
+              'faas.invoke_duration',
+              (performance.now() - startedAt) / 1000,
+              { 'faas.coldstart': coldStart },
+              { unit: 's' },
+            );
 
           // ---- timeout capture ----
           const margin = opts.timeoutMarginMs === false ? 0 : (opts.timeoutMarginMs ?? DEFAULT_TIMEOUT_MARGIN_MS);
@@ -152,8 +154,8 @@ export function withObservability<E = any, R = any>(
                 code: SpanStatusCode.ERROR,
                 message: `Lambda timeout imminent (${remaining}ms budget, ${margin}ms margin)`,
               });
-              metrics.count('faas.timeouts', 1);
-              metrics.count('faas.errors', 1, { 'faas.coldstart': coldStart, 'error.type': 'timeout' });
+              metrics.count('faas.timeouts', 1, undefined, { unit: '{timeout}' });
+              metrics.count('faas.errors', 1, { 'faas.coldstart': coldStart, 'error.type': 'timeout' }, { unit: '{error}' });
               recordDuration();
               endSpan();
               // Fire and forget: whatever ships inside the margin is what survives.
@@ -185,7 +187,7 @@ export function withObservability<E = any, R = any>(
                 code: SpanStatusCode.ERROR,
                 message: err?.message,
               });
-              metrics.count('faas.errors', 1, { 'faas.coldstart': coldStart });
+              metrics.count('faas.errors', 1, { 'faas.coldstart': coldStart }, { unit: '{error}' });
             }
             throw err;
           } finally {
@@ -233,7 +235,7 @@ function applyHttpResponse(
     const type = String(code);
     span.setAttribute('error.type', type);
     span.setStatus({ code: SpanStatusCode.ERROR, message: `HTTP ${code}` });
-    metrics.count('faas.errors', 1, { 'faas.coldstart': coldStart, 'error.type': type });
+    metrics.count('faas.errors', 1, { 'faas.coldstart': coldStart, 'error.type': type }, { unit: '{error}' });
   }
 }
 

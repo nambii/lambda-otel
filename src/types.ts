@@ -1,6 +1,6 @@
 import type { Instrumentation } from '@opentelemetry/instrumentation';
 import type { SpanExporter } from '@opentelemetry/sdk-trace-base';
-import type { MetricReader } from '@opentelemetry/sdk-metrics';
+import type { MetricReader, ViewOptions } from '@opentelemetry/sdk-metrics';
 import type { LogRecordExporter, LogRecordProcessor } from '@opentelemetry/sdk-logs';
 
 export interface ObservabilityConfig {
@@ -26,6 +26,15 @@ export interface ObservabilityConfig {
    * wrapper force-flushes on every invocation, which is what actually ships data.
    */
   metricExportIntervalMillis?: number;
+  /**
+   * Additional metric Views (e.g. custom histogram buckets for your own
+   * instruments). Appended after the package's built-in views, which give the
+   * `faas.*_duration` histograms seconds-scale buckets and `faas.mem_usage` an
+   * exponential histogram. Set `defaultViews: false` to drop the built-ins.
+   */
+  views?: ViewOptions[];
+  /** Register the package's built-in histogram views. Default true. */
+  defaultViews?: boolean;
   /** Override the default instrumentation set entirely. */
   instrumentations?: Instrumentation[];
   /** Emit OTEL diagnostic logs to the console. */

@@ -4,6 +4,7 @@ import {
   DiagLogLevel,
   metrics as otelMetrics,
 } from '@opentelemetry/api';
+import { diagLogLevelFromString } from '@opentelemetry/core';
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
 import { BatchSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
@@ -67,8 +68,12 @@ export function initObservability(config: ObservabilityConfig = {}): void {
   if (initialized) return;
   initialized = true;
 
-  if (config.debug) {
-    diag.setLogger(new DiagConsoleLogger(), DiagLogLevel.DEBUG);
+  // Diagnostics: explicit debug wins, else honor OTEL_LOG_LEVEL.
+  const level = config.debug
+    ? DiagLogLevel.DEBUG
+    : diagLogLevelFromString(process.env.OTEL_LOG_LEVEL);
+  if (level !== undefined && level !== DiagLogLevel.NONE) {
+    diag.setLogger(new DiagConsoleLogger(), level);
   }
 
   const resource = buildResource(config) as never;

@@ -38,7 +38,11 @@ export interface ObservabilityConfig {
   defaultViews?: boolean;
   /** Override the default instrumentation set entirely. */
   instrumentations?: Instrumentation[];
-  /** Emit OTEL diagnostic logs to the console. */
+  /**
+   * Emit OTEL diagnostic logs to the console at DEBUG. When false/unset, the
+   * standard `OTEL_LOG_LEVEL` env var (none|error|warn|info|debug|verbose|all)
+   * is honored instead.
+   */
   debug?: boolean;
   /**
    * Also understand AWS X-Ray trace context: the `X-Amzn-Trace-Id` header

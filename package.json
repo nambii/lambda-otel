@@ -37,6 +37,8 @@
     },
     "./register": {
       "types": "./dist/register.d.ts",
+      "import": "./dist/register.mjs",
+      "require": "./dist/register.js",
       "default": "./dist/register.js"
     }
   },
@@ -44,12 +46,13 @@
     "dist"
   ],
   "sideEffects": [
-    "./dist/register.js"
+    "./dist/register.js",
+    "./dist/register.mjs"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && cp src/register.mjs dist/register.mjs",
     "prepublishOnly": "npm run build",
-    "test": "tsx --test test/*.test.ts",
+    "test": "npm run build && tsx --test test/*.test.ts",
     "typecheck:examples": "tsc -p tsconfig.examples.json"
   },
   "engines": {

@@ -15,8 +15,10 @@ import {
   metrics,
   defaultInstrumentations,
   compileMatcher,
+  buildViews,
   trace,
 } from '../src/index';
+import { AggregationType } from '@opentelemetry/sdk-metrics';
 
 // This file runs in its own process (node --test isolates files), so it gets
 // its own initObservability with the redaction / metrics / instrumentation
@@ -49,7 +51,7 @@ initObservability({
     attribute: (key, value) => (key === 'url.full' ? String(value).split('?')[0] : value),
   },
   metricsConfig: {
-    drop: ['debug.*'],
+    drop: ['debug.*', 'faas.invoke_duration'], // second one is a built-in view: must really drop
     allowedAttributes: { 'orders.*': ['currency'] },
     deniedAttributes: { 'payments.count': ['card_last4'] },
     warnCardinalityAbove: 5,
@@ -165,7 +167,7 @@ test('redact: log record attributes go through the same matcher', async () => {
 
 // ---- metricsConfig ----
 
-test('metricsConfig.drop removes matching instruments from export', async () => {
+test('metricsConfig.drop removes matching instruments from export, built-ins included', async () => {
   await withObservability(async () => {
     metrics.count('debug.loop_iterations', 3);
     metrics.count('orders.created', 1, { currency: 'AUD' });
@@ -173,7 +175,45 @@ test('metricsConfig.drop removes matching instruments from export', async () => 
   })({ headers: {} }, ctx());
 
   assert.equal(metricByName('debug.loop_iterations'), undefined);
+  assert.equal(metricByName('faas.invoke_duration'), undefined, 'built-in view must not resurrect a dropped instrument');
+  assert.ok(metricByName('faas.invocations'));
   assert.ok(metricByName('orders.created'));
+  // and no instrument is exported twice
+  const names = metricExporter.getMetrics().flatMap((rm) => rm.scopeMetrics.flatMap((sm) => sm.metrics.map((m) => m.descriptor.name)));
+  assert.equal(new Set(names).size, names.length, `duplicate streams: ${names}`);
+});
+
+test('buildViews: one view per instrument — merges exact rules into built-ins, replaces on wildcard overlap', () => {
+  const byName = (views: ReturnType<typeof buildViews>, n: string) => views.filter((v) => v.instrumentName === n);
+
+  // exact allow-list on a built-in: merged, buckets kept, single view
+  let views = buildViews({ metricsConfig: { allowedAttributes: { 'faas.init_duration': ['faas.coldstart'] } } });
+  const merged = byName(views, 'faas.init_duration');
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].aggregation?.type, AggregationType.EXPLICIT_BUCKET_HISTOGRAM);
+  assert.equal(merged[0].attributesProcessors?.length, 1);
+
+  // drop on a built-in: built-in view gone, DROP view present, once
+  views = buildViews({ metricsConfig: { drop: ['faas.*_duration'] } });
+  assert.equal(byName(views, 'faas.invoke_duration').length, 0);
+  assert.equal(byName(views, 'faas.init_duration').length, 0);
+  assert.equal(views.filter((v) => v.aggregation?.type === AggregationType.DROP).length, 1);
+
+  // wildcard allow overlapping a built-in: built-in removed (warned), generic view present
+  warnings.length = 0;
+  views = buildViews({ metricsConfig: { allowedAttributes: { 'aws.lambda.*': ['x'] } } });
+  assert.equal(views.some((v) => v.instrumentName === 'aws.lambda.billed_duration'), false);
+  assert.equal(byName(views, 'aws.lambda.*').length, 1);
+  assert.match(warnings[0], /also matches built-in instrument/);
+
+  // allow + deny on the same pattern: one view, two processors
+  views = buildViews({ defaultViews: false, metricsConfig: { allowedAttributes: { 'x.*': ['a'] }, deniedAttributes: { 'x.*': ['b'] } } });
+  assert.equal(views.length, 1);
+  assert.equal(views[0].attributesProcessors?.length, 2);
+
+  // user views appended untouched
+  views = buildViews({ defaultViews: false, views: [{ instrumentName: 'u' }] });
+  assert.deepEqual(views, [{ instrumentName: 'u' }]);
 });
 
 test('metricsConfig allow/deny lists strip attributes per instrument pattern', async () => {

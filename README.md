@@ -538,10 +538,13 @@ initObservability({
 
 `drop` / `allowedAttributes` / `deniedAttributes` are sugar over OTel Views
 (`DROP` aggregation and allow/deny attribute processors) and take the same
-`*` patterns. Two caveats from how Views work: a pattern that also matches
-one of the package's built-in `faas.*` histogram views produces a second
-stream for that instrument, so scope patterns to your own names; and
-`cardinalityLimit` only applies to the package-built metric reader.
+`*` patterns. The package merges them with its built-in histogram views so
+every instrument is matched by exactly one view: `drop` really drops a
+built-in (`'faas.init_duration'`), an exact-name allow/deny rule keeps the
+built-in buckets, and a wildcard rule that overlaps a built-in replaces it
+(the instrument falls back to default buckets, with a warning). Your own
+`views` are appended as given. `cardinalityLimit` only applies to the
+package-built metric reader.
 
 `warnCardinalityAbove` is the early-warning half: the `metrics` facade counts
 distinct attribute sets per instrument and logs one warning when a name

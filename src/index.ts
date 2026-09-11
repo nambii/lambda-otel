@@ -5,6 +5,7 @@ export {
   isInitialized,
   defaultViews,
   metricsConfigViews,
+  buildViews,
   resolveExporterTimeout,
   DURATION_SECONDS_BUCKETS,
   DEFAULT_EXPORTER_TIMEOUT_MS,

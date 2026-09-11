@@ -30,7 +30,7 @@ import { buildResource } from './resource';
 import { defaultInstrumentations } from './instrumentations';
 import { startTelemetryExtension } from './telemetry-api';
 import { buildPropagator } from './propagation';
-import { buildRedactor, RedactingLogRecordExporter, RedactingSpanExporter } from './redact';
+import { buildRedactor, compileMatcher, RedactingLogRecordExporter, RedactingSpanExporter } from './redact';
 import { configureMetricsFacade, resetMetricsFacade } from './metrics';
 import type { MetricsConfig, ObservabilityConfig } from './types';
 
@@ -93,20 +93,78 @@ export function defaultViews(): ViewOptions[] {
   ];
 }
 
-/** Views derived from `metricsConfig` (drop lists, attribute allow/deny lists). */
+/**
+ * Views derived from `metricsConfig` (drop lists, attribute allow/deny lists),
+ * merged with the built-in views so no instrument ends up matched by two
+ * views. sdk-metrics creates one metric stream per matching view, so a naive
+ * "built-ins + user rules" list would export an instrument twice (and make a
+ * `drop` rule for a built-in instrument a no-op).
+ *
+ * Rules:
+ *  - `drop` patterns remove any built-in view they match, then add DROP views.
+ *  - allow/deny rules with an exact built-in instrument name merge their
+ *    processors into that built-in view (buckets kept).
+ *  - allow/deny rules with a wildcard that overlaps a built-in replace that
+ *    built-in view (the instrument loses its seconds buckets) with a warning.
+ *  - allow + deny on the same pattern become one view.
+ */
+export function buildViews(config: Pick<ObservabilityConfig, 'defaultViews' | 'metricsConfig' | 'views'>): ViewOptions[] {
+  const builtIn = config.defaultViews !== false ? defaultViews() : [];
+  const mc = config.metricsConfig;
+  if (!mc) return [...builtIn, ...(config.views ?? [])];
+
+  const dropMatch = compileMatcher(mc.drop);
+  let kept = builtIn.filter((v) => !dropMatch(v.instrumentName!));
+
+  // One rule per pattern, carrying both processors when both are given.
+  const rules = new Map<string, ViewOptions>();
+  const rule = (pattern: string) => {
+    let r = rules.get(pattern);
+    if (!r) {
+      r = { instrumentName: pattern, attributesProcessors: [] };
+      rules.set(pattern, r);
+    }
+    return r;
+  };
+  for (const [pattern, keys] of Object.entries(mc.allowedAttributes ?? {})) {
+    rule(pattern).attributesProcessors!.push(createAllowListAttributesProcessor(keys));
+  }
+  for (const [pattern, keys] of Object.entries(mc.deniedAttributes ?? {})) {
+    rule(pattern).attributesProcessors!.push(createDenyListAttributesProcessor(keys));
+  }
+
+  const standalone: ViewOptions[] = [];
+  for (const [pattern, r] of rules) {
+    const exact = kept.find((v) => v.instrumentName === pattern);
+    if (exact) {
+      exact.attributesProcessors = [...(exact.attributesProcessors ?? []), ...r.attributesProcessors!];
+      continue;
+    }
+    if (pattern.includes('*')) {
+      const match = compileMatcher([pattern]);
+      const overlapped = kept.filter((v) => match(v.instrumentName!));
+      if (overlapped.length) {
+        diag.warn(
+          `lambda-otel: metricsConfig pattern "${pattern}" also matches built-in instrument(s) ` +
+            `${overlapped.map((v) => v.instrumentName).join(', ')}; they lose their built-in histogram ` +
+            'buckets. Use exact names to keep them.',
+        );
+        kept = kept.filter((v) => !match(v.instrumentName!));
+      }
+    }
+    standalone.push(r);
+  }
+
+  const drops: ViewOptions[] = (mc.drop ?? []).map((instrumentName) => ({
+    instrumentName,
+    aggregation: { type: AggregationType.DROP },
+  }));
+  return [...kept, ...drops, ...standalone, ...(config.views ?? [])];
+}
+
+/** @deprecated Use {@link buildViews}; kept for callers that inspected the raw rule views. */
 export function metricsConfigViews(config: MetricsConfig | undefined): ViewOptions[] {
-  if (!config) return [];
-  const views: ViewOptions[] = [];
-  for (const instrumentName of config.drop ?? []) {
-    views.push({ instrumentName, aggregation: { type: AggregationType.DROP } });
-  }
-  for (const [instrumentName, keys] of Object.entries(config.allowedAttributes ?? {})) {
-    views.push({ instrumentName, attributesProcessors: [createAllowListAttributesProcessor(keys)] });
-  }
-  for (const [instrumentName, keys] of Object.entries(config.deniedAttributes ?? {})) {
-    views.push({ instrumentName, attributesProcessors: [createDenyListAttributesProcessor(keys)] });
-  }
-  return views;
+  return buildViews({ defaultViews: false, metricsConfig: config });
 }
 
 export function initObservability(config: ObservabilityConfig = {}): void {
@@ -184,11 +242,7 @@ export function initObservability(config: ObservabilityConfig = {}): void {
           ? { cardinalityLimits: { default: config.metricsConfig.cardinalityLimit } }
           : {}),
       });
-    const views = [
-      ...(config.defaultViews !== false ? defaultViews() : []),
-      ...metricsConfigViews(config.metricsConfig),
-      ...(config.views ?? []),
-    ];
+    const views = buildViews(config);
     meterProvider = new MeterProvider({ resource, readers: [reader], views });
     otelMetrics.setGlobalMeterProvider(meterProvider);
   }

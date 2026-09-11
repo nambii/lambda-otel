@@ -143,7 +143,8 @@ export function initObservability(config: ObservabilityConfig = {}): void {
   if (redactor) traceExporter = new RedactingSpanExporter(traceExporter, redactor);
   tracerProvider = new NodeTracerProvider({
     resource,
-    spanProcessors: [new BatchSpanProcessor(traceExporter)],
+    spanProcessors: [new BatchSpanProcessor(traceExporter), ...(config.spanProcessors ?? [])],
+    ...(config.sampler ? { sampler: config.sampler } : {}),
   });
   // Registers the provider globally and installs propagation (W3C, plus X-Ray
   // when asked for). `undefined` lets the provider install its W3C default.

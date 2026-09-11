@@ -183,6 +183,8 @@ handler `import`s are never patched and you would see only the root span.
 | `serviceVersion`  | fn version                      | —                        |
 | `environment`     | `DEPLOYMENT_ENV`                | —                        |
 | `resourceAttributes` | `OTEL_RESOURCE_ATTRIBUTES`   | —                        |
+| `sampler`         | `OTEL_TRACES_SAMPLER[_ARG]`     | always-on (parent-based) |
+| `spanProcessors`  | —                               | —                        |
 | `otlpEndpoint`    | `OTEL_EXPORTER_OTLP_ENDPOINT`   | `http://localhost:4318`  |
 | `exporterTimeoutMillis` | `OTEL_EXPORTER_OTLP[_<SIGNAL>]_TIMEOUT` | `3000`         |
 | `instrumentations`| —                               | http, undici, aws-sdk, pg |
@@ -249,13 +251,27 @@ initObservability({
 Datadog converts OTLP histograms to distributions and ignores buckets, so this
 only matters on Prometheus-style backends (Grafana Cloud, Mimir, etc).
 
-### Sampling
+### Sampling and extra span processors
 
 Standard OTel env vars are honored (verified against the installed package):
 
 ```
 OTEL_TRACES_SAMPLER=parentbased_traceidratio
 OTEL_TRACES_SAMPLER_ARG=0.1     # keep 10% of new traces; always follow an inbound sampled parent
+```
+
+Or pass a `sampler` in code (any `@opentelemetry/sdk-trace-base` `Sampler`),
+and add `spanProcessors` for a second exporter, baggage-to-attributes, tail
+sampling or custom enrichment. They run after the package's own batch
+exporter processor; `redact` covers only the package's exporter, so wrap
+your own with `RedactingSpanExporter` if it needs the same treatment.
+
+```ts
+import { ParentBasedSampler, TraceIdRatioBasedSampler } from '@opentelemetry/sdk-trace-base';
+initObservability({
+  sampler: new ParentBasedSampler({ root: new TraceIdRatioBasedSampler(0.1) }),
+  spanProcessors: [new BaggageSpanProcessor()],
+});
 ```
 
 Metrics are never sampled.

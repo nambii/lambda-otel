@@ -1,5 +1,5 @@
 import type { Instrumentation } from '@opentelemetry/instrumentation';
-import type { SpanExporter } from '@opentelemetry/sdk-trace-base';
+import type { Sampler, SpanExporter, SpanProcessor } from '@opentelemetry/sdk-trace-base';
 import type { MetricReader, ViewOptions } from '@opentelemetry/sdk-metrics';
 import type { LogRecordExporter, LogRecordProcessor } from '@opentelemetry/sdk-logs';
 import type { AttributeValue, Span, TextMapPropagator } from '@opentelemetry/api';
@@ -163,6 +163,17 @@ export interface ObservabilityConfig {
   propagator?: TextMapPropagator;
   /** Advanced/testing: inject a span exporter instead of the OTLP default. */
   traceExporter?: SpanExporter;
+  /**
+   * Extra span processors, run after the package's batch exporter processor:
+   * a second exporter, baggage-to-attributes, tail sampling, custom
+   * enrichment. Redaction applies only to the package's own exporter.
+   */
+  spanProcessors?: SpanProcessor[];
+  /**
+   * Programmatic sampler. When unset the SDK's env-driven default applies
+   * (`OTEL_TRACES_SAMPLER` / `OTEL_TRACES_SAMPLER_ARG`, else always-on).
+   */
+  sampler?: Sampler;
   /** Advanced/testing: inject a metric reader instead of the OTLP default. */
   metricReader?: MetricReader;
   /**

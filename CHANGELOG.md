@@ -23,6 +23,9 @@ Capture controls (all opt-in):
 
 Behavior changes (minor bump; all defaults are on):
 
+- **`sampler` and `spanProcessors`** config passthrough, for programmatic
+  sampling, a second exporter, baggage-to-attributes or tail sampling without
+  bypassing `initObservability`.
 - **`OTEL_RESOURCE_ATTRIBUTES` honored** (it was ignored), plus a
   `resourceAttributes` config option. Precedence: env < code < the package's
   own `service.name` / cloud attributes.

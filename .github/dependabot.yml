@@ -1,0 +1,33 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      # OTel stable + experimental packages must move together (see README
+      # "Compatibility & maintenance"), so one PR for all of them.
+      opentelemetry:
+        patterns:
+          - "@opentelemetry/*"
+      dev-tooling:
+        dependency-type: development
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "@opentelemetry/*"
+    ignore:
+      # Major bumps of the framework peers are the consumer's call.
+      - dependency-name: koa
+        update-types: ["version-update:semver-major"]
+      - dependency-name: pino
+        update-types: ["version-update:semver-major"]
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday

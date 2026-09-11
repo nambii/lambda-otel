@@ -116,6 +116,16 @@ test('errors are recorded on the span and rethrown', async () => {
   assert.equal(metricSum('faas.errors'), 1);
 });
 
+test('inbound headers are matched case-insensitively (API Gateway REST keeps client casing)', async () => {
+  const traceId = '1af7651916cd43dd8448eb211c80319c';
+  const handler = withObservability(async () => null);
+  await handler(
+    { httpMethod: 'GET', resource: '/x', headers: { Traceparent: `00-${traceId}-b7ad6b7169203331-01` } },
+    { awsRequestId: 'req-case' },
+  );
+  assert.equal(spans()[0].spanContext().traceId, traceId);
+});
+
 test('imminent timeout ends the span as an error and counts faas.timeouts before the deadline', async () => {
   // 200ms budget, 150ms margin: the timeout handler fires at ~50ms while the
   // handler is still sleeping.

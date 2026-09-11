@@ -7,6 +7,7 @@ export {
   type LambdaContextLike,
 } from './handler';
 export { detectTrigger, type TriggerInfo, type FaasTriggerType } from './triggers';
+export { normalizeCarrier } from './propagation';
 export {
   startTelemetryExtension,
   ingestTelemetryEvent,

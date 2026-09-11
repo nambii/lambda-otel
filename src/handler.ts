@@ -10,6 +10,7 @@ import {
 import { flush } from './sdk';
 import { metrics } from './metrics';
 import { detectTrigger, lambdaContextAttributes } from './triggers';
+import { normalizeCarrier } from './propagation';
 
 const TRACER_NAME = 'lambda-otel';
 
@@ -43,8 +44,9 @@ export interface WrapOptions {
   spanName?: string;
   /**
    * Carrier extractor for inbound trace context. Default reads `event.headers`
-   * (API Gateway / Lambda URL). Override for SQS/EventBridge/etc., e.g. pull
-   * `traceparent` out of message attributes.
+   * (API Gateway / Lambda URL / ALB). Override for SQS/EventBridge/etc., e.g.
+   * pull `traceparent` out of message attributes. Keys are lowercased before
+   * extraction, so header casing never matters.
    */
   extractCarrier?: (event: unknown) => Record<string, string> | undefined;
   /**
@@ -97,10 +99,7 @@ export function withObservability<E = any, R = any>(
     const enrich = opts.experimentalAttributes !== false;
     const trigger = detectTrigger(event);
 
-    const carrier =
-      opts.extractCarrier?.(event) ??
-      ((event as any)?.headers as Record<string, string> | undefined) ??
-      {};
+    const carrier = normalizeCarrier(opts.extractCarrier?.(event) ?? (event as any)?.headers);
     const parentCtx = propagation.extract(context.active(), carrier);
 
     const tracer = trace.getTracer(TRACER_NAME);

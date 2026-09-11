@@ -34,3 +34,55 @@ test('CJS preload: --require lambda-otel/register initializes the SDK', async ()
   );
   assert.equal(stdout.trim(), 'true');
 });
+
+// ---- does the ESM path actually patch anything? ----
+// The two tests above prove the entry loads. These prove instrumentation lands
+// on modules the handler `import`s, which is the whole point of register.mjs.
+
+test('ESM: http.request is wrapped after --import lambda-otel/register', async () => {
+  const script = `
+    import http from 'node:http';
+    import { isWrapped } from '@opentelemetry/instrumentation';
+    console.log(JSON.stringify({ request: isWrapped(http.request), get: isWrapped(http.get) }));
+  `;
+  const { stdout } = await run(
+    process.execPath,
+    ['--import', 'lambda-otel/register', '--input-type=module', '-e', script],
+    { cwd: root, env: { ...process.env, OTEL_LOG_LEVEL: 'none' } },
+  );
+  assert.deepEqual(JSON.parse(stdout.trim()), { request: true, get: true });
+});
+
+test('ESM: a CommonJS package imported from ESM (koa) is patched via the loader hook', async () => {
+  const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+  const os = await import('node:os');
+  const { pathToFileURL } = await import('node:url');
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'lambda-otel-esm-'));
+  const preload = path.join(dir, 'preload.mjs');
+  // A consumer preload: loader hook first, then init with koa opted in.
+  await writeFile(
+    preload,
+    `
+    import { register, createRequire } from 'node:module';
+    register('@opentelemetry/instrumentation/hook.mjs', ${JSON.stringify(pathToFileURL(root + '/').href)});
+    const require = createRequire(${JSON.stringify(path.join(root, 'package.json'))});
+    const { initObservability } = require(${JSON.stringify(path.join(root, 'dist/index.js'))});
+    initObservability({ metrics: false, instrumentationConfig: { koa: { ignoreLayersType: ['middleware'] } } });
+    `,
+  );
+  const script = `
+    import Koa from 'koa';
+    import { isWrapped } from '@opentelemetry/instrumentation';
+    console.log(JSON.stringify({ use: isWrapped(Koa.prototype.use) }));
+  `;
+  try {
+    const { stdout } = await run(
+      process.execPath,
+      ['--import', pathToFileURL(preload).href, '--input-type=module', '-e', script],
+      { cwd: root, env: { ...process.env, OTEL_LOG_LEVEL: 'none' } },
+    );
+    assert.deepEqual(JSON.parse(stdout.trim()), { use: true });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

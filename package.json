@@ -40,7 +40,8 @@
       "import": "./dist/register.mjs",
       "require": "./dist/register.js",
       "default": "./dist/register.js"
-    }
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist"

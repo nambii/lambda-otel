@@ -7,10 +7,12 @@ import { flush, resolveExporterTimeout, DEFAULT_EXPORTER_TIMEOUT_MS } from '../s
 // The providers are not initialized in this process, so forceFlush resolves
 // immediately; the timer path is what we're checking.
 
-test('flush with a deadline resolves and clears its timer', async () => {
+test('flush with a deadline returns as soon as the work is done, not at the deadline', async () => {
+  // No providers are initialized in this process, so the flush work resolves
+  // immediately; the only way to take ~5 s is to wait on the deadline timer.
   const t0 = Date.now();
-  await flush(50);
-  assert.ok(Date.now() - t0 < 50);
+  await flush(5_000);
+  assert.ok(Date.now() - t0 < 1_000, `took ${Date.now() - t0}ms`);
 });
 
 test('flush with a zero/negative/NaN deadline never throws', async () => {

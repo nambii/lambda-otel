@@ -26,6 +26,11 @@ test('ESM preload: --import lambda-otel/register initializes the SDK and install
   assert.deepEqual(JSON.parse(stdout.trim()), { initialized: true, wrapped: 'function' });
 });
 
+test('package.json is reachable through the exports map', async () => {
+  const { stdout } = await run(process.execPath, ['-p', "require('lambda-otel/package.json').name"], { cwd: root });
+  assert.equal(stdout.trim(), 'lambda-otel');
+});
+
 test('CJS preload: --require lambda-otel/register initializes the SDK', async () => {
   const { stdout } = await run(
     process.execPath,

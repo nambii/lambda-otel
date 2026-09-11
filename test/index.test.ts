@@ -27,6 +27,7 @@ initObservability({
   traceExporter: spanExporter,
   metricReader,
   logRecordProcessor: new SimpleLogRecordProcessor(logExporter),
+  xrayPropagation: true,
 });
 
 /** A Lambda context with a live deadline, like the runtime provides. */
@@ -190,6 +191,48 @@ test('timeout capture is skipped when the handler finishes in time or is disable
   }, { timeoutMarginMs: false })({ headers: {} }, ctx({}, 80));
   for (const s of spans()) assert.equal(s.status.code, SpanStatusCode.UNSET);
   assert.equal(metricSum('faas.timeouts'), undefined);
+});
+
+test('X-Ray: inbound header becomes the parent, env var becomes a link, SQS AWSTraceHeader links', async () => {
+  const xrayTrace = '1-5759e988-bd862e3fe1be46a994272793';
+  const otelTraceId = '5759e988bd862e3fe1be46a994272793';
+
+  // Header from API Gateway / ALB with active tracing → parent.
+  await withObservability(async () => null)(
+    { httpMethod: 'GET', resource: '/x', headers: { 'X-Amzn-Trace-Id': `Root=${xrayTrace};Parent=53995c3f42cd8ad8;Sampled=1` } },
+    ctx({ awsRequestId: 'req-xray-header' }),
+  );
+  assert.equal(spans()[0].spanContext().traceId, otelTraceId);
+  assert.equal(spans()[0].parentSpanContext?.spanId, '53995c3f42cd8ad8');
+
+  // Env var (Lambda sets it on every invoke, Sampled=0 without active tracing) → link only, never a parent.
+  process.env._X_AMZN_TRACE_ID = `Root=${xrayTrace};Parent=aaaaaaaaaaaaaaaa;Sampled=0`;
+  try {
+    await withObservability(async () => null)({ headers: {} }, ctx({ awsRequestId: 'req-xray-env' }));
+  } finally {
+    delete process.env._X_AMZN_TRACE_ID;
+  }
+  const envSpan = spans()[1];
+  assert.notEqual(envSpan.spanContext().traceId, otelTraceId);
+  assert.equal(envSpan.parentSpanContext, undefined);
+  assert.equal(envSpan.links.length, 1);
+  assert.equal(envSpan.links[0].context.traceId, otelTraceId);
+
+  // SQS system attribute → link per record.
+  await withObservability(async () => null)(
+    {
+      Records: [
+        {
+          eventSource: 'aws:sqs',
+          eventSourceARN: 'arn:aws:sqs:us-east-1:111122223333:q',
+          attributes: { AWSTraceHeader: `Root=${xrayTrace};Parent=bbbbbbbbbbbbbbbb;Sampled=1` },
+        },
+      ],
+    },
+    ctx({ awsRequestId: 'req-xray-sqs' }),
+  );
+  assert.equal(spans()[2].links.length, 1);
+  assert.equal(spans()[2].links[0].context.spanId, 'bbbbbbbbbbbbbbbb');
 });
 
 test('duration histograms use seconds-scale buckets and carry units', async () => {

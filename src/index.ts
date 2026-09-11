@@ -14,7 +14,7 @@ export {
   type LambdaContextLike,
 } from './handler';
 export { detectTrigger, type TriggerInfo, type FaasTriggerType } from './triggers';
-export { normalizeCarrier } from './propagation';
+export { normalizeCarrier, isXrayEnabled } from './propagation';
 export {
   startTelemetryExtension,
   ingestTelemetryEvent,

@@ -3,6 +3,7 @@ import {
   context,
   diag,
   propagation,
+  type Link,
   type Span,
   SpanStatusCode,
   trace,
@@ -10,7 +11,7 @@ import {
 import { flush } from './sdk';
 import { metrics } from './metrics';
 import { detectTrigger, lambdaContextAttributes, type TriggerInfo } from './triggers';
-import { normalizeCarrier } from './propagation';
+import { normalizeCarrier, xrayEnvLink } from './propagation';
 
 const TRACER_NAME = 'lambda-otel';
 
@@ -109,6 +110,13 @@ export function withObservability<E = any, R = any>(
     const carrier = normalizeCarrier(opts.extractCarrier?.(event) ?? (event as any)?.headers);
     const parentCtx = propagation.extract(context.active(), carrier);
 
+    const links: Link[] = enrich ? [...trigger.links] : [];
+    // Join the X-Ray segment by link when nothing upstream gave us a parent.
+    if (!trace.getSpanContext(parentCtx)) {
+      const xray = xrayEnvLink();
+      if (xray) links.push(xray);
+    }
+
     const tracer = trace.getTracer(TRACER_NAME);
     const spanName =
       opts.spanName ?? process.env.AWS_LAMBDA_FUNCTION_NAME ?? 'lambda.invoke';
@@ -126,7 +134,7 @@ export function withObservability<E = any, R = any>(
     return context.with(parentCtx, () =>
       tracer.startActiveSpan(
         spanName,
-        { kind: trigger.kind, links: enrich ? trigger.links : [] },
+        { kind: trigger.kind, links },
         async (span) => {
           let ended = false;
           let timedOut = false;

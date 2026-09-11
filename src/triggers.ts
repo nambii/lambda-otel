@@ -1,11 +1,5 @@
-import {
-  context,
-  propagation,
-  SpanKind,
-  trace,
-  type Attributes,
-  type Link,
-} from '@opentelemetry/api';
+import { SpanKind, type Attributes, type Link } from '@opentelemetry/api';
+import { linkFromCarrier, XRAY_HEADER } from './propagation';
 
 /**
  * Maps an inbound Lambda event onto the OpenTelemetry FaaS/messaging semantic
@@ -145,11 +139,13 @@ function sqs(records: any[]): TriggerInfo {
   if (records.length > 1) attributes['messaging.batch.message_count'] = records.length;
   const links: Link[] = [];
   for (const r of records) {
-    // Default to W3C traceparent in user message attributes (what
-    // instrumentation-aws-sdk injects). AWSTraceHeader/X-Ray would need the
-    // X-Ray propagator dependency, deliberately not pulled in here.
+    // Prefer W3C traceparent in user message attributes (what
+    // instrumentation-aws-sdk injects). Fall back to the AWSTraceHeader system
+    // attribute, which only yields a link when xrayPropagation is on.
     const tp = r?.messageAttributes?.traceparent?.stringValue;
-    pushLink(links, tp);
+    const xray = r?.attributes?.AWSTraceHeader;
+    if (typeof tp === 'string') pushLink(links, { traceparent: tp });
+    else if (typeof xray === 'string') pushLink(links, { [XRAY_HEADER]: xray });
   }
   return { trigger: 'pubsub', kind: SpanKind.CONSUMER, attributes, links };
 }
@@ -166,7 +162,7 @@ function sns(records: any[]): TriggerInfo {
   const links: Link[] = [];
   for (const r of records) {
     const tp = r?.Sns?.MessageAttributes?.traceparent?.Value;
-    pushLink(links, tp);
+    if (typeof tp === 'string') pushLink(links, { traceparent: tp });
   }
   return { trigger: 'pubsub', kind: SpanKind.CONSUMER, attributes, links };
 }
@@ -244,9 +240,7 @@ function s3Operation(eventName?: string): string | undefined {
   return undefined;
 }
 
-function pushLink(links: Link[], traceparent?: string): void {
-  if (!traceparent) return;
-  const ctx = propagation.extract(context.active(), { traceparent });
-  const spanContext = trace.getSpanContext(ctx);
-  if (spanContext?.traceId) links.push({ context: spanContext });
+function pushLink(links: Link[], carrier: Record<string, string>): void {
+  const link = linkFromCarrier(carrier);
+  if (link) links.push(link);
 }

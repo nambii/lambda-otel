@@ -2,6 +2,7 @@ import type { Instrumentation } from '@opentelemetry/instrumentation';
 import type { SpanExporter } from '@opentelemetry/sdk-trace-base';
 import type { MetricReader, ViewOptions } from '@opentelemetry/sdk-metrics';
 import type { LogRecordExporter, LogRecordProcessor } from '@opentelemetry/sdk-logs';
+import type { TextMapPropagator } from '@opentelemetry/api';
 
 export interface ObservabilityConfig {
   /** Logical service name. Falls back to OTEL_SERVICE_NAME, then the Lambda function name. */
@@ -39,6 +40,19 @@ export interface ObservabilityConfig {
   instrumentations?: Instrumentation[];
   /** Emit OTEL diagnostic logs to the console. */
   debug?: boolean;
+  /**
+   * Also understand AWS X-Ray trace context: the `X-Amzn-Trace-Id` header
+   * (API Gateway / ALB with active tracing), the SQS `AWSTraceHeader` system
+   * attribute, and the `_X_AMZN_TRACE_ID` env var Lambda sets per invocation.
+   * Inbound X-Ray context from headers becomes the root span's parent; the env
+   * var and SQS attribute become span *links* (never a parent — Lambda sets the
+   * env var with `Sampled=0` whenever active tracing is off, and a non-sampled
+   * parent would drop the whole trace). Requires the optional peer
+   * `@opentelemetry/propagator-aws-xray`. Default false.
+   */
+  xrayPropagation?: boolean;
+  /** Advanced: replace the global propagator entirely (overrides xrayPropagation). */
+  propagator?: TextMapPropagator;
   /** Advanced/testing: inject a span exporter instead of the OTLP default. */
   traceExporter?: SpanExporter;
   /** Advanced/testing: inject a metric reader instead of the OTLP default. */

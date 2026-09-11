@@ -23,6 +23,7 @@ import { OTLPLogExporter } from '@opentelemetry/exporter-logs-otlp-http';
 import { buildResource } from './resource';
 import { defaultInstrumentations } from './instrumentations';
 import { startTelemetryExtension } from './telemetry-api';
+import { buildPropagator } from './propagation';
 import type { ObservabilityConfig } from './types';
 
 let tracerProvider: NodeTracerProvider | undefined;
@@ -89,8 +90,11 @@ export function initObservability(config: ObservabilityConfig = {}): void {
     resource,
     spanProcessors: [new BatchSpanProcessor(traceExporter)],
   });
-  // Registers the provider globally and installs W3C trace-context propagation.
-  tracerProvider.register();
+  // Registers the provider globally and installs propagation (W3C, plus X-Ray
+  // when asked for). `undefined` lets the provider install its W3C default.
+  tracerProvider.register({
+    propagator: config.propagator ?? buildPropagator(config.xrayPropagation),
+  });
 
   // ---- Metrics (on by default; disable with metrics:false, e.g. for Sentry) ----
   if (config.metrics !== false) {

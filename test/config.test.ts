@@ -12,6 +12,7 @@ import { InMemoryLogRecordExporter } from '@opentelemetry/sdk-logs';
 import {
   initObservability,
   withObservability,
+  metrics,
   defaultInstrumentations,
   compileMatcher,
   trace,
@@ -47,6 +48,12 @@ initObservability({
     dropAttributes: ['db.query.text', 'http.request.header.*'],
     attribute: (key, value) => (key === 'url.full' ? String(value).split('?')[0] : value),
   },
+  metricsConfig: {
+    drop: ['debug.*'],
+    allowedAttributes: { 'orders.*': ['currency'] },
+    deniedAttributes: { 'payments.count': ['card_last4'] },
+    warnCardinalityAbove: 5,
+  },
 });
 diag.setLogger(captureLogger);
 
@@ -59,6 +66,13 @@ beforeEach(() => {
 
 function spans(): ReadableSpan[] {
   return spanExporter.getFinishedSpans();
+}
+
+function metricByName(name: string) {
+  return metricExporter
+    .getMetrics()
+    .flatMap((rm) => rm.scopeMetrics.flatMap((sm) => sm.metrics))
+    .find((m) => m.descriptor.name === name);
 }
 
 const ctx = () => ({ awsRequestId: 'req', getRemainingTimeInMillis: () => 30_000 });
@@ -144,4 +158,43 @@ test('redact: log record attributes go through the same matcher', async () => {
 
   const [record] = logExporter.getFinishedLogRecords();
   assert.deepEqual(record.attributes, { order: 7 });
+});
+
+// ---- metricsConfig ----
+
+test('metricsConfig.drop removes matching instruments from export', async () => {
+  await withObservability(async () => {
+    metrics.count('debug.loop_iterations', 3);
+    metrics.count('orders.created', 1, { currency: 'AUD' });
+    return null;
+  })({ headers: {} }, ctx());
+
+  assert.equal(metricByName('debug.loop_iterations'), undefined);
+  assert.ok(metricByName('orders.created'));
+});
+
+test('metricsConfig allow/deny lists strip attributes per instrument pattern', async () => {
+  await withObservability(async () => {
+    metrics.count('orders.created', 1, { currency: 'AUD', customer_id: 'c-123' });
+    metrics.count('payments.count', 1, { card_last4: '4242', method: 'card' });
+    return null;
+  })({ headers: {} }, ctx());
+
+  const orders = metricByName('orders.created')!;
+  assert.deepEqual(orders.dataPoints[0].attributes, { currency: 'AUD' });
+  const payments = metricByName('payments.count')!;
+  assert.deepEqual(payments.dataPoints[0].attributes, { method: 'card' });
+});
+
+test('metrics facade warns once when an instrument crosses warnCardinalityAbove', async () => {
+  await withObservability(async () => {
+    for (let i = 0; i < 20; i++) metrics.count('lookups', 1, { request_id: `r-${i}` });
+    for (let i = 0; i < 20; i++) metrics.record('lat', i, { region: 'ap-southeast-2' }); // one set, no warning
+    return null;
+  })({ headers: {} }, ctx());
+
+  const hits = warnings.filter((w) => w.includes('"lookups"'));
+  assert.equal(hits.length, 1);
+  assert.match(hits[0], /5 distinct attribute sets/);
+  assert.equal(warnings.some((w) => w.includes('"lat"')), false);
 });

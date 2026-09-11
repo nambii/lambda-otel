@@ -58,6 +58,28 @@ export interface RedactConfig {
   attribute?: (key: string, value: AttributeValue, ctx: RedactContext) => AttributeValue | undefined;
 }
 
+/** Controls over which custom metrics and metric attributes are exported. */
+export interface MetricsConfig {
+  /** Instrument name patterns to drop entirely (`'debug.*'`). */
+  drop?: string[];
+  /** Instrument name pattern → attribute keys to keep; every other attribute is stripped. */
+  allowedAttributes?: Record<string, string[]>;
+  /** Instrument name pattern → attribute keys to strip. */
+  deniedAttributes?: Record<string, string[]>;
+  /**
+   * Hard cap on distinct attribute sets per instrument enforced by the SDK
+   * (overflow lands in the `otel.metric.overflow` series). Default 2000.
+   * Only applies to the package-built metric reader.
+   */
+  cardinalityLimit?: number;
+  /**
+   * The `metrics` facade logs one warning per instrument once it has seen this
+   * many distinct attribute sets — the usual sign of a request ID or user ID
+   * leaking into a tag. Default 1000; `false` disables.
+   */
+  warnCardinalityAbove?: number | false;
+}
+
 export interface ObservabilityConfig {
   /** Logical service name. Falls back to OTEL_SERVICE_NAME, then the Lambda function name. */
   serviceName?: string;
@@ -100,6 +122,8 @@ export interface ObservabilityConfig {
   instrumentations?: Instrumentation[];
   /** Attribute redaction at the export boundary. See {@link RedactConfig}. */
   redact?: RedactConfig;
+  /** Custom-metric filtering and cardinality controls. See {@link MetricsConfig}. */
+  metricsConfig?: MetricsConfig;
   /**
    * Emit OTEL diagnostic logs to the console at DEBUG. When false/unset, the
    * standard `OTEL_LOG_LEVEL` env var (none|error|warn|info|debug|verbose|all)

@@ -186,6 +186,7 @@ handler `import`s are never patched and you would see only the root span.
 | `instrumentations`| —                               | http, aws-sdk, pg        |
 | `instrumentationConfig` | —                         | upstream defaults        |
 | `redact`          | —                               | off                      |
+| `metricsConfig`   | —                               | warn at 1000 attr sets   |
 | `xrayPropagation` | —                               | `false`                  |
 | `views` / `defaultViews` | —                        | built-in histogram views |
 | `telemetryMetrics`| —                               | `false`                  |
@@ -395,7 +396,7 @@ The same applies to `serverless-http`, Powertools' `injectLambdaContext`, etc.
 
 ## Controlling what gets captured
 
-Two layers, both additive and off unless you set them.
+Three layers, all additive and all off unless you set them.
 
 ### Per-instrumentation options (`instrumentationConfig`)
 
@@ -462,6 +463,32 @@ sees everything that survives. Attributes are edited in place, so every
 exporter downstream sees the redacted view. A custom `logRecordProcessor`
 bypasses the log half — wrap your own exporter with `RedactingLogRecordExporter`
 in that case.
+
+### Custom metric filtering (`metricsConfig`)
+
+```ts
+initObservability({
+  metricsConfig: {
+    drop: ['debug.*'],                                 // never exported
+    allowedAttributes: { 'orders.*': ['currency'] },   // strip every other tag
+    deniedAttributes: { 'payments.count': ['card_last4'] },
+    cardinalityLimit: 2000,                            // SDK hard cap per instrument (default 2000)
+    warnCardinalityAbove: 1000,                        // facade warning; false to silence
+  },
+});
+```
+
+`drop` / `allowedAttributes` / `deniedAttributes` are sugar over OTel Views
+(`DROP` aggregation and allow/deny attribute processors) and take the same
+`*` patterns. Two caveats from how Views work: a pattern that also matches
+one of the package's built-in `faas.*` histogram views produces a second
+stream for that instrument, so scope patterns to your own names; and
+`cardinalityLimit` only applies to the package-built metric reader.
+
+`warnCardinalityAbove` is the early-warning half: the `metrics` facade counts
+distinct attribute sets per instrument and logs one warning when a name
+crosses the threshold — almost always a request ID, user ID or timestamp that
+leaked into a tag. Tracking stops at the threshold, so memory stays bounded.
 
 ## Logs (trace correlation + optional forwarding)
 
@@ -721,6 +748,8 @@ alternative is [otel-desktop-viewer](https://github.com/CtrlSpice/otel-desktop-v
 | p50/p99 of `faas.invoke_duration` look flat on Grafana/Prometheus | Custom histogram recorded in seconds against default ms buckets | Built-in `faas.*` histograms already have seconds buckets; add a View for your own (see *Custom metrics API*) |
 | Traces not joined to X-Ray / API Gateway active tracing | `xrayPropagation` off or peer missing | `initObservability({ xrayPropagation: true })` + install `@opentelemetry/propagator-aws-xray` |
 | SQL text / auth headers showing up in a vendor UI | Instrumentation sets them by default | `redact.dropAttributes: ['db.query.text', 'http.request.header.*']`, or per-library options via `instrumentationConfig` |
+| `metric "x" has reached N distinct attribute sets` warning | A per-request value is used as a metric attribute | Remove it, or `metricsConfig.allowedAttributes` / `deniedAttributes`; raise `warnCardinalityAbove` if intentional |
+| Metric vanished after adding `metricsConfig` | `drop` pattern too broad (`'*'`, `'orders*'`) | Narrow the pattern; check `metricsConfigViews(cfg)` output |
 
 Set `OTEL_DEBUG=true` (with the `register` preload) or the standard
 `OTEL_LOG_LEVEL=debug` to get the OTel diagnostic logger; it prints every export

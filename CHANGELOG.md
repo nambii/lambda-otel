@@ -13,6 +13,10 @@ Capture controls (all opt-in):
   patterns and an `attribute(key, value, ctx)` transform — applied to span,
   event, link and forwarded log-record attributes. `RedactingSpanExporter` /
   `RedactingLogRecordExporter` exported for custom pipelines.
+- **`metricsConfig`**: `drop` patterns, `allowedAttributes` / `deniedAttributes`
+  per instrument pattern (Views under the hood), `cardinalityLimit` for the
+  SDK reader, and a `metrics` facade warning at `warnCardinalityAbove`
+  distinct attribute sets (default 1000).
 
 Behavior changes (minor bump; all defaults are on):
 

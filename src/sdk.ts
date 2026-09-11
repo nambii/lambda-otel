@@ -11,6 +11,8 @@ import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
 import {
   AggregationTemporality,
   AggregationType,
+  createAllowListAttributesProcessor,
+  createDenyListAttributesProcessor,
   MeterProvider,
   PeriodicExportingMetricReader,
   type ViewOptions,
@@ -26,7 +28,8 @@ import { defaultInstrumentations } from './instrumentations';
 import { startTelemetryExtension } from './telemetry-api';
 import { buildPropagator } from './propagation';
 import { buildRedactor, RedactingLogRecordExporter, RedactingSpanExporter } from './redact';
-import type { ObservabilityConfig } from './types';
+import { configureMetricsFacade } from './metrics';
+import type { MetricsConfig, ObservabilityConfig } from './types';
 
 let tracerProvider: NodeTracerProvider | undefined;
 let meterProvider: MeterProvider | undefined;
@@ -63,6 +66,22 @@ export function defaultViews(): ViewOptions[] {
     // hand-picked boundaries.
     { instrumentName: 'faas.mem_usage', aggregation: { type: AggregationType.EXPONENTIAL_HISTOGRAM } },
   ];
+}
+
+/** Views derived from `metricsConfig` (drop lists, attribute allow/deny lists). */
+export function metricsConfigViews(config: MetricsConfig | undefined): ViewOptions[] {
+  if (!config) return [];
+  const views: ViewOptions[] = [];
+  for (const instrumentName of config.drop ?? []) {
+    views.push({ instrumentName, aggregation: { type: AggregationType.DROP } });
+  }
+  for (const [instrumentName, keys] of Object.entries(config.allowedAttributes ?? {})) {
+    views.push({ instrumentName, attributesProcessors: [createAllowListAttributesProcessor(keys)] });
+  }
+  for (const [instrumentName, keys] of Object.entries(config.deniedAttributes ?? {})) {
+    views.push({ instrumentName, attributesProcessors: [createDenyListAttributesProcessor(keys)] });
+  }
+  return views;
 }
 
 export function initObservability(config: ObservabilityConfig = {}): void {
@@ -108,6 +127,7 @@ export function initObservability(config: ObservabilityConfig = {}): void {
 
   // ---- Metrics (on by default; disable with metrics:false, e.g. for Sentry) ----
   if (config.metrics !== false) {
+    configureMetricsFacade({ warnCardinalityAbove: config.metricsConfig?.warnCardinalityAbove });
     const reader =
       config.metricReader ??
       new PeriodicExportingMetricReader({
@@ -119,9 +139,13 @@ export function initObservability(config: ObservabilityConfig = {}): void {
         }),
         // The timer is a fallback; real delivery happens via flush() per invocation.
         exportIntervalMillis: config.metricExportIntervalMillis ?? 60_000,
+        ...(config.metricsConfig?.cardinalityLimit
+          ? { cardinalityLimits: { default: config.metricsConfig.cardinalityLimit } }
+          : {}),
       });
     const views = [
       ...(config.defaultViews !== false ? defaultViews() : []),
+      ...metricsConfigViews(config.metricsConfig),
       ...(config.views ?? []),
     ];
     meterProvider = new MeterProvider({ resource, readers: [reader], views });

@@ -4,6 +4,7 @@ export {
   shutdown,
   isInitialized,
   defaultViews,
+  metricsConfigViews,
   DURATION_SECONDS_BUCKETS,
 } from './sdk';
 export {
@@ -36,6 +37,7 @@ export type {
   KoaInstrumentationConfigLike,
   RedactConfig,
   RedactContext,
+  MetricsConfig,
 } from './types';
 
 // Re-export the OTEL API surface most consumers reach for, so they don't have

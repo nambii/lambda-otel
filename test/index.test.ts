@@ -193,6 +193,38 @@ test('timeout capture is skipped when the handler finishes in time or is disable
   assert.equal(metricSum('faas.timeouts'), undefined);
 });
 
+test('hooks that throw are swallowed and the handler still completes', async () => {
+  const handler = withObservability(async () => 'ok', {
+    requestHook: () => {
+      throw new Error('bad request hook');
+    },
+    responseHook: () => {
+      throw new Error('bad response hook');
+    },
+  });
+  assert.equal(await handler({ headers: {} }, ctx()), 'ok');
+  assert.equal(spans()[0].status.code, SpanStatusCode.UNSET);
+});
+
+test('response-streaming signature (event, stream, context) passes through and finds the context', async () => {
+  const stream = { write() {}, end() {} };
+  const seen: unknown[] = [];
+  const handler = withObservability(async (event, s, c) => {
+    seen.push(event, s, c);
+    return 'streamed';
+  });
+  const c = ctx({ awsRequestId: 'req-stream', invokedFunctionArn: 'arn:aws:lambda:us-east-1:111122223333:function:s' });
+  await handler({ headers: {} }, stream, c);
+  assert.deepEqual(seen, [{ headers: {} }, stream, c]);
+  assert.equal(spans()[0].attributes['faas.invocation_id'], 'req-stream');
+  assert.equal(spans()[0].attributes['cloud.account.id'], '111122223333');
+});
+
+test('callback-style signature (event, context, callback) still finds the context', async () => {
+  await withObservability(async () => 'cb')({ headers: {} }, ctx({ awsRequestId: 'req-cb' }), () => {});
+  assert.equal(spans()[0].attributes['faas.invocation_id'], 'req-cb');
+});
+
 test('X-Ray: inbound header becomes the parent, env var becomes a link, SQS AWSTraceHeader links', async () => {
   const xrayTrace = '1-5759e988-bd862e3fe1be46a994272793';
   const otelTraceId = '5759e988bd862e3fe1be46a994272793';

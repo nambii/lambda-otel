@@ -33,7 +33,12 @@ export interface LambdaContextLike {
   getRemainingTimeInMillis?: () => number;
 }
 
-type LambdaHandler<E, R> = (event: E, lambdaContext: any) => Promise<R>;
+/**
+ * A Lambda handler. The runtime calls `(event, context, callback)`; response
+ * streaming handlers receive `(event, responseStream, context)`. The wrapper
+ * passes every argument through untouched and locates the context by shape.
+ */
+type LambdaHandler<E, R> = (event: E, ...rest: any[]) => Promise<R>;
 
 /** Receives the root span plus the raw event/context before the handler runs. */
 export type RequestHook = (span: Span, info: { event: unknown; context: unknown }) => void;
@@ -99,10 +104,11 @@ export function withObservability<E = any, R = any>(
   handler: LambdaHandler<E, R>,
   opts: WrapOptions = {},
 ): LambdaHandler<E, R> {
-  return async (event: E, lambdaContext: any): Promise<R> => {
+  return async (event: E, ...rest: any[]): Promise<R> => {
     const coldStart = isColdStart;
     isColdStart = false;
     const startedAt = performance.now();
+    const lambdaContext = findLambdaContext(rest);
 
     const enrich = opts.experimentalAttributes !== false;
     const trigger = detectTrigger(event);
@@ -185,7 +191,7 @@ export function withObservability<E = any, R = any>(
           }
           runHook(opts.requestHook, span, { event, context: lambdaContext });
           try {
-            const result = await handler(event, lambdaContext);
+            const result = await handler(event, ...rest);
             runHook(opts.responseHook, span, { res: result });
             if (!timedOut) applyHttpResponse(span, trigger, result, coldStart, opts);
             return result;
@@ -213,6 +219,24 @@ export function withObservability<E = any, R = any>(
       ),
     );
   };
+}
+
+/**
+ * The runtime passes `(event, context, callback)`; streaming handlers get
+ * `(event, responseStream, context)`. Pick the argument that looks like a
+ * context rather than trusting position.
+ */
+function findLambdaContext(rest: any[]): LambdaContextLike | undefined {
+  for (const arg of rest) {
+    if (
+      arg &&
+      typeof arg === 'object' &&
+      (typeof arg.getRemainingTimeInMillis === 'function' || typeof arg.awsRequestId === 'string')
+    ) {
+      return arg;
+    }
+  }
+  return rest[0] && typeof rest[0] === 'object' ? rest[0] : undefined;
 }
 
 function remainingMs(lambdaContext: LambdaContextLike | undefined): number | undefined {

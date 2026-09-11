@@ -105,8 +105,9 @@ layer needed, at the cost of in-handler network latency on flush.
 
 > Note on Datadog specifically: the stripped Lambda collector does **not** bundle
 > the Datadog exporter, and the Datadog extension's OTLP endpoint accepts traces
-> but **not** custom metrics. For full metrics to Datadog, route through a custom
-> collector build (or central gateway) that includes the `datadog` exporter.
+> but **not** custom metrics. For metrics, point the metrics exporter at Datadog's
+> OTLP intake with per-signal env vars (see *Datadog* under "Sending to a backend"), or
+> route through a collector build that includes the `datadog` exporter.
 
 ## The esbuild / SST caveat (important)
 
@@ -422,10 +423,11 @@ OTEL_EXPORTER_OTLP_TRACES_HEADERS=x-sentry-auth=sentry sentry_key=<public-key>
 OTEL_EXPORTER_OTLP_LOGS_HEADERS=x-sentry-auth=sentry sentry_key=<public-key>
 ```
 
-**Datadog** — two working setups. The package code is identical in both; only
-the layer and env differ.
+**Datadog** — three working setups. The package code is identical in all of
+them; only the layer and env differ. **C is the recommended one** when you
+want custom metrics without running a collector.
 
-*A. Datadog Lambda Extension (traces + logs, no OTLP metrics).* Least setup.
+*A. Datadog Lambda Extension only (traces + logs, no OTLP metrics).* Least setup.
 
 1. Attach the extension layer:
    `arn:aws:lambda:<region>:464622532012:layer:Datadog-Extension:<version>`
@@ -444,9 +446,10 @@ the layer and env differ.
    reaches the extension.
 3. The extension rejects OTLP **metrics**. The package tolerates this (flush is
    best-effort), but every invoke would make one failing POST and log a warning,
-   so disable them: `initObservability({ metrics: false })` in your own preload.
+   so either disable them (`initObservability({ metrics: false })` in your own
+   preload) or route them straight to Datadog's OTLP intake — setup C.
    The extension emits its own `aws.lambda.enhanced.*` cold-start/duration/error
-   metrics; for custom metrics use DogStatsD or Datadog's `sendDistributionMetric`.
+   metrics regardless.
 
 *B. OpenTelemetry Collector with the `datadog` exporter (traces + metrics + logs).*
 Use this when custom metrics matter.
@@ -484,16 +487,41 @@ Use this when custom metrics matter.
    ```
    Datadog maps `service.name` → `service` and `deployment.environment.name` → `env`.
 
-*Hybrid:* traces to the extension, metrics to a collector, via per-signal env
-vars (`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`).
-This only works when `otlpEndpoint` is **not** passed in code — a code value
-overrides every env var.
+*C. Extension for traces + Datadog's OTLP metrics intake for metrics.*
+No collector. Verified working end to end: root/child spans via the
+extension, `faas.*` and custom `metrics.*` via the intake.
+
+Datadog's [OTLP metrics intake](https://docs.datadoghq.com/opentelemetry/setup/otlp_ingest/metrics/)
+accepts **delta** temporality only, which is what this package emits, so the
+metrics exporter can target it directly with per-signal env vars.
+
+1. Attach the extension layer and set the `DD_*` env exactly as in setup A.
+2. Add per-signal env for metrics only; traces keep the `localhost:4318` default:
+   ```
+   OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=https://otlp.datadoghq.com/v1/metrics   # otlp.datadoghq.eu, otlp.us5.datadoghq.com, ...
+   OTEL_EXPORTER_OTLP_METRICS_HEADERS=dd-api-key=<key>
+   ```
+   Keep `metrics: true` (the default). Do **not** pass `otlpEndpoint` in code —
+   a code value overrides every env var and would send metrics to the extension.
+3. Caveats:
+   - The API key lives in an env var; `DD_API_KEY_SECRET_ARN` is read by the
+     extension, not by the OTel exporter. To keep the key out of env, resolve it
+     from Secrets Manager in your own preload and pass
+     `initObservability({ headers: { 'dd-api-key': key } })` — but that header
+     then applies to the trace exporter too, which the extension ignores.
+   - One outbound HTTPS POST per invoke on flush (typically tens of ms). Set
+     `OTEL_EXPORTER_OTLP_TIMEOUT` low so a Datadog outage cannot stall the handler.
+   - Intake rejects payloads over 512 KiB compressed; not a concern at Lambda
+     per-invoke volumes.
+
+The same per-signal env vars also cover other hybrids, e.g. traces to the
+extension and metrics to a collector.
 
 | Backend | Traces | Metrics | Logs |
 |---|---|---|---|
 | Grafana Cloud | ✓ | ✓ | ✓ |
 | Sentry | ✓ | — | ✓ (beta) |
-| Datadog | ✓ | not via extension OTLP | ✓ |
+| Datadog | ✓ | ✓ (OTLP intake or collector; not via extension) | ✓ |
 
 ## Local development
 

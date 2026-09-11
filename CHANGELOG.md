@@ -4,9 +4,12 @@
 
 Capture controls (all opt-in):
 
+- **undici in the default set.** Outbound global `fetch()` was invisible by
+  default; `@opentelemetry/instrumentation-undici` is now an
+  `optionalDependency` registered alongside http/aws-sdk/pg.
 - **`instrumentationConfig`**: per-instrumentation options for the default
-  set — `http`, `awsSdk`, `pg` take their upstream config objects, `false`
-  disables one, `koa` is opt-in (optional peer
+  set — `http`, `undici`, `awsSdk`, `pg` take their upstream config objects,
+  `false` disables one, `koa` is opt-in (optional peer
   `@opentelemetry/instrumentation-koa`). `defaultInstrumentations(map)` takes
   the same map.
 - **`redact`**: attribute redaction at the export boundary — `dropAttributes`

@@ -50,7 +50,7 @@ Do these in order. Each step is expanded in its own section below.
 1. **Install** — `npm install lambda-otel @opentelemetry/api`.
 2. **Preload** — set the Lambda env var `NODE_OPTIONS=--require lambda-otel/register`
    (`--import` for ESM). This initializes the SDK *before* your handler module
-   loads, so `http`, `@aws-sdk/*`, and `pg` get patched. If you need extra
+   loads, so `http`, `fetch()`, `@aws-sdk/*`, and `pg` get patched. If you need extra
    instrumentations (Koa, pino, undici…), preload your own file instead — see
    [`examples/instrument.ts`](./examples/instrument.ts).
 3. **Wrap the handler** — `export const handler = withObservability(async (event, context) => { ... })`.
@@ -127,7 +127,7 @@ layer needed, at the cost of in-handler network latency on flush.
 
 OTEL auto-instrumentation patches modules at `require()` time. esbuild inlines
 those modules, so the patch never lands and you get spans for your own code but
-none for `http`, `@aws-sdk/*`, or `pg`. Two fixes:
+none for `http`, `fetch()`, `@aws-sdk/*`, or `pg`. Two fixes:
 
 1. **Externalize the instrumented packages** so they're resolved at runtime and
    can be patched. In SST v2:
@@ -183,7 +183,7 @@ handler `import`s are never patched and you would see only the root span.
 | `serviceVersion`  | fn version                      | —                        |
 | `environment`     | `DEPLOYMENT_ENV`                | —                        |
 | `otlpEndpoint`    | `OTEL_EXPORTER_OTLP_ENDPOINT`   | `http://localhost:4318`  |
-| `instrumentations`| —                               | http, aws-sdk, pg        |
+| `instrumentations`| —                               | http, undici, aws-sdk, pg |
 | `instrumentationConfig` | —                         | upstream defaults        |
 | `redact`          | —                               | off                      |
 | `metricsConfig`   | —                               | warn at 1000 attr sets   |
@@ -412,6 +412,7 @@ initObservability({
       headersToSpanAttributes: { client: { requestHeaders: ['x-request-id'] } },
       redactedQueryParams: ['token', 'signature'],
     },
+    undici: { requireParentforSpans: true },                             // fetch(); or false
     pg: { enhancedDatabaseReporting: false, ignoreConnectSpans: true }, // or false
     awsSdk: { sqsExtractContextPropagationFromPayload: false },         // or false
     koa: { ignoreLayersType: ['middleware'] },                          // opt-in, see below
@@ -422,18 +423,19 @@ initObservability({
 | Key | Upstream type | Notes |
 |---|---|---|
 | `http` | `HttpInstrumentationConfig` | ignore hooks, `headersToSpanAttributes`, `redactedQueryParams`, request/response hooks |
+| `undici` | `UndiciInstrumentationConfig` | outbound global `fetch()`; `instrumentation-http` does not see it on Node 18+ |
 | `awsSdk` | `AwsSdkInstrumentationConfig` | `suppressInternalInstrumentation` stays `true` unless you flip it |
 | `pg` | `PgInstrumentationConfig` | `enhancedDatabaseReporting` adds bound parameter values — leave off for PII |
 | `koa` | mirror of `KoaInstrumentationConfig` | registered only when set; needs `npm install @opentelemetry/instrumentation-koa` |
 
 `instrumentations: [...]` still replaces the whole set when you need something
-not in the map (undici for `fetch()`, pino/winston for log correlation):
+not in the map (pino/winston for log correlation, a framework not listed):
 
 ```ts
 initObservability({
   instrumentations: [
     ...defaultInstrumentations({ koa: { ignoreLayersType: ['middleware'] } }),
-    new UndiciInstrumentation(),
+    new PinoInstrumentation(),
   ],
 });
 ```
@@ -735,7 +737,7 @@ alternative is [otel-desktop-viewer](https://github.com/CtrlSpice/otel-desktop-v
 | Symptom | Cause | Fix |
 |---|---|---|
 | Root span only; no `http` / `pg` / AWS SDK child spans | Libraries were imported before the SDK initialized, or esbuild inlined them | Use `NODE_OPTIONS=--require lambda-otel/register` (or call `initObservability()` first thing); externalize packages per the bundler matrix |
-| No outbound `fetch()` spans | `instrumentation-http` doesn't cover undici/fetch | Add `@opentelemetry/instrumentation-undici` |
+| No outbound `fetch()` spans | `@opentelemetry/instrumentation-undici` omitted (`--omit=optional`) or `instrumentationConfig.undici: false` | Reinstall it; it is in the default set |
 | Nothing arrives at all | Wrong endpoint / port, or flush not running | Check `OTEL_EXPORTER_OTLP_ENDPOINT` (base URL, no `/v1/...`); confirm the handler is wrapped; set `OTEL_DEBUG=true` and read the exporter logs |
 | Warning `lambda-otel: flush failed` every invoke, traces fine | Endpoint rejects one signal (e.g. Datadog extension rejects metrics) | `initObservability({ metrics: false })`, or route that signal elsewhere with per-signal env vars |
 | Duplicate `sdk-trace-base` / type errors about `Resource` | Mixed OTel package generations in your project | Align versions with the table below; keep `@opentelemetry/api` at `^1.9` |

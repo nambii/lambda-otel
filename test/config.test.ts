@@ -84,18 +84,21 @@ test('instrumentationConfig: false drops an instrumentation, objects pass throug
 
   assert.deepEqual(names(defaultInstrumentations()), [
     '@opentelemetry/instrumentation-http',
+    '@opentelemetry/instrumentation-undici',
     '@opentelemetry/instrumentation-aws-sdk',
     '@opentelemetry/instrumentation-pg',
   ]);
-  assert.deepEqual(names(defaultInstrumentations({ pg: false, awsSdk: false })), [
+  assert.deepEqual(names(defaultInstrumentations({ pg: false, awsSdk: false, undici: false })), [
     '@opentelemetry/instrumentation-http',
   ]);
+  const [, undici] = defaultInstrumentations({ undici: { requireParentforSpans: true } });
+  assert.equal((undici.getConfig() as any).requireParentforSpans, true);
 
   const [http] = defaultInstrumentations({ http: { serverName: 'x', requireParentforOutgoingSpans: true } });
   assert.equal((http.getConfig() as any).serverName, 'x');
   assert.equal((http.getConfig() as any).requireParentforOutgoingSpans, true);
 
-  const [, aws] = defaultInstrumentations({ awsSdk: { sqsExtractContextPropagationFromPayload: false } });
+  const [, , aws] = defaultInstrumentations({ awsSdk: { sqsExtractContextPropagationFromPayload: false } });
   const awsCfg = aws.getConfig() as any;
   assert.equal(awsCfg.suppressInternalInstrumentation, true); // default kept
   assert.equal(awsCfg.sqsExtractContextPropagationFromPayload, false);

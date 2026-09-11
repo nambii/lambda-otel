@@ -13,16 +13,24 @@ import type { InstrumentationConfigMap } from './types';
  * the _HANDLER env resolving to an on-disk module, which breaks under bundling.
  * withObservability() creates the root span and extracts context instead.
  *
- * `@opentelemetry/instrumentation-pg` is an optionalDependency: installed by
- * default, but a consumer without Postgres can drop it (`--omit=optional`, or
- * an override) and this still works. `@opentelemetry/instrumentation-koa` is an
- * optional peer, registered only when `koa` config is given.
+ * `@opentelemetry/instrumentation-pg` and `-undici` are optionalDependencies:
+ * installed by default, but a consumer can drop either (`--omit=optional`, or
+ * an override) and this still works. `@opentelemetry/instrumentation-koa` is
+ * an optional peer, registered only when `koa` config is given.
  */
 export function defaultInstrumentations(config: InstrumentationConfigMap = {}): Instrumentation[] {
   const list: Instrumentation[] = [];
 
   if (config.http !== false) {
     list.push(new HttpInstrumentation(config.http ?? {}));
+  }
+
+  if (config.undici !== false) {
+    // Global fetch() on Node 18+ goes through undici, which instrumentation-http
+    // never sees; without this outbound fetch calls are invisible.
+    const UndiciInstrumentation = optionalRequire('@opentelemetry/instrumentation-undici', 'UndiciInstrumentation');
+    if (UndiciInstrumentation) list.push(new UndiciInstrumentation(config.undici ?? {}));
+    else diag.debug('lambda-otel: @opentelemetry/instrumentation-undici not installed; fetch() spans off');
   }
 
   if (config.awsSdk !== false) {

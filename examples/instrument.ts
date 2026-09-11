@@ -8,13 +8,12 @@
  * Why a preload and not the handler module: instrumentation patches `koa` and
  * `undici` at require-time, so it must run BEFORE those modules are imported.
  * The package's built-in `lambda-otel/register` only loads the core
- * set (http, aws-sdk, pg); this adds the API-handler instrumentations on top.
+ * set (http, undici, aws-sdk, pg); this adds the API-handler instrumentations on top.
  *
  * Bundling note: with esbuild/SST, mark these external so they can be patched —
  *   external: ['@opentelemetry/*', 'lambda-otel', 'pg', 'koa', '@koa/router']
  */
 import { initObservability, defaultInstrumentations } from 'lambda-otel';
-import { UndiciInstrumentation } from '@opentelemetry/instrumentation-undici';
 import { PinoInstrumentation } from '@opentelemetry/instrumentation-pino';
 // Winston is the same shape:
 // import { WinstonInstrumentation } from '@opentelemetry/instrumentation-winston';
@@ -28,13 +27,12 @@ initObservability({
   redact: { dropAttributes: ['db.query.text', 'http.request.header.*'] },
   instrumentations: [
     ...defaultInstrumentations({
-      // http + aws-sdk + pg with their upstream options, plus opt-in koa.
+      // http + undici + aws-sdk + pg with their upstream options, plus opt-in koa.
       http: { ignoreIncomingRequestHook: (req) => req.url === '/health' },
       // Generic per-middleware spans are noisy; keep router (route-name) spans,
       // drop the rest. Remove this to see every middleware layer.
       koa: { ignoreLayersType: ['middleware'] },
     }),
-    new UndiciInstrumentation(), // outbound global fetch() — not covered by http
     // Injects trace_id / span_id / trace_flags into every pino log line so logs
     // link to the active span. Add WinstonInstrumentation here if you use winston.
     new PinoInstrumentation(),

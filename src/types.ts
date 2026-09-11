@@ -6,6 +6,7 @@ import type { AttributeValue, Span, TextMapPropagator } from '@opentelemetry/api
 import type { HttpInstrumentationConfig } from '@opentelemetry/instrumentation-http';
 import type { AwsSdkInstrumentationConfig } from '@opentelemetry/instrumentation-aws-sdk';
 import type { PgInstrumentationConfig } from '@opentelemetry/instrumentation-pg';
+import type { UndiciInstrumentationConfig } from '@opentelemetry/instrumentation-undici';
 
 /**
  * Structural mirror of `KoaInstrumentationConfig` so the type does not leak a
@@ -28,6 +29,8 @@ export interface KoaInstrumentationConfigLike {
  */
 export interface InstrumentationConfigMap {
   http?: HttpInstrumentationConfig | false;
+  /** Outbound global `fetch()` (undici). `instrumentation-http` does not see it on Node 18+. */
+  undici?: UndiciInstrumentationConfig | false;
   awsSdk?: AwsSdkInstrumentationConfig | false;
   pg?: PgInstrumentationConfig | false;
   koa?: KoaInstrumentationConfigLike | false;

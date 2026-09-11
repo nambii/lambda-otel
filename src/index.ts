@@ -23,10 +23,19 @@ export {
 } from './telemetry-api';
 export { metrics, type InstrumentOptions } from './metrics';
 export { defaultInstrumentations } from './instrumentations';
+export {
+  RedactingSpanExporter,
+  RedactingLogRecordExporter,
+  buildRedactor,
+  compileMatcher,
+  type AttributeRedactor,
+} from './redact';
 export type {
   ObservabilityConfig,
   InstrumentationConfigMap,
   KoaInstrumentationConfigLike,
+  RedactConfig,
+  RedactContext,
 } from './types';
 
 // Re-export the OTEL API surface most consumers reach for, so they don't have

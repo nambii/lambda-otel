@@ -2,7 +2,7 @@ import type { Instrumentation } from '@opentelemetry/instrumentation';
 import type { SpanExporter } from '@opentelemetry/sdk-trace-base';
 import type { MetricReader, ViewOptions } from '@opentelemetry/sdk-metrics';
 import type { LogRecordExporter, LogRecordProcessor } from '@opentelemetry/sdk-logs';
-import type { Span, TextMapPropagator } from '@opentelemetry/api';
+import type { AttributeValue, Span, TextMapPropagator } from '@opentelemetry/api';
 import type { HttpInstrumentationConfig } from '@opentelemetry/instrumentation-http';
 import type { AwsSdkInstrumentationConfig } from '@opentelemetry/instrumentation-aws-sdk';
 import type { PgInstrumentationConfig } from '@opentelemetry/instrumentation-pg';
@@ -31,6 +31,31 @@ export interface InstrumentationConfigMap {
   awsSdk?: AwsSdkInstrumentationConfig | false;
   pg?: PgInstrumentationConfig | false;
   koa?: KoaInstrumentationConfigLike | false;
+}
+
+/** Context handed to the `redact.attribute` callback. */
+export interface RedactContext {
+  signal: 'span' | 'log';
+  /** Span name, or the log record's body when it is a string. */
+  name?: string;
+}
+
+/**
+ * Attribute redaction applied at the export boundary, so it covers every
+ * instrumentation and manual span alike, plus forwarded log records.
+ */
+export interface RedactConfig {
+  /**
+   * Attribute keys to remove. Exact keys or `*` wildcards
+   * (`'http.request.header.*'`, `'db.query.text'`). Applied to span, span
+   * event and span link attributes, and to log record attributes.
+   */
+  dropAttributes?: string[];
+  /**
+   * Transform or drop any attribute. Return the value to keep it (possibly
+   * rewritten), or `undefined` to drop it. Runs after `dropAttributes`.
+   */
+  attribute?: (key: string, value: AttributeValue, ctx: RedactContext) => AttributeValue | undefined;
 }
 
 export interface ObservabilityConfig {
@@ -73,6 +98,8 @@ export interface ObservabilityConfig {
   instrumentationConfig?: InstrumentationConfigMap;
   /** Override the default instrumentation set entirely. */
   instrumentations?: Instrumentation[];
+  /** Attribute redaction at the export boundary. See {@link RedactConfig}. */
+  redact?: RedactConfig;
   /**
    * Emit OTEL diagnostic logs to the console at DEBUG. When false/unset, the
    * standard `OTEL_LOG_LEVEL` env var (none|error|warn|info|debug|verbose|all)

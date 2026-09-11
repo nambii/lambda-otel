@@ -25,6 +25,7 @@ import { buildResource } from './resource';
 import { defaultInstrumentations } from './instrumentations';
 import { startTelemetryExtension } from './telemetry-api';
 import { buildPropagator } from './propagation';
+import { buildRedactor, RedactingLogRecordExporter, RedactingSpanExporter } from './redact';
 import type { ObservabilityConfig } from './types';
 
 let tracerProvider: NodeTracerProvider | undefined;
@@ -89,8 +90,12 @@ export function initObservability(config: ObservabilityConfig = {}): void {
     ...(config.headers ? { headers: config.headers } : {}),
   });
 
+  // Redaction wraps whichever exporters end up in use (OTLP or injected).
+  const redactor = buildRedactor(config.redact);
+
   // ---- Traces ----
-  const traceExporter = config.traceExporter ?? new OTLPTraceExporter(otlpArgs('traces'));
+  let traceExporter = config.traceExporter ?? new OTLPTraceExporter(otlpArgs('traces'));
+  if (redactor) traceExporter = new RedactingSpanExporter(traceExporter, redactor);
   tracerProvider = new NodeTracerProvider({
     resource,
     spanProcessors: [new BatchSpanProcessor(traceExporter)],
@@ -128,9 +133,10 @@ export function initObservability(config: ObservabilityConfig = {}): void {
   // Pino/Winston instrumentation injects trace context regardless; this pipeline
   // is only for forwarding the log records themselves over OTLP.
   if (config.logs || config.logExporter || config.logRecordProcessor) {
-    const logProcessor =
-      config.logRecordProcessor ??
-      new BatchLogRecordProcessor(config.logExporter ?? new OTLPLogExporter(otlpArgs('logs')));
+    let logExporter = config.logExporter ?? new OTLPLogExporter(otlpArgs('logs'));
+    if (redactor) logExporter = new RedactingLogRecordExporter(logExporter, redactor);
+    // A custom logRecordProcessor bypasses redaction; wrap your own exporter then.
+    const logProcessor = config.logRecordProcessor ?? new BatchLogRecordProcessor(logExporter);
     loggerProvider = new LoggerProvider({ resource, processors: [logProcessor] });
     logsApi.setGlobalLoggerProvider(loggerProvider);
   }

@@ -185,6 +185,7 @@ handler `import`s are never patched and you would see only the root span.
 | `otlpEndpoint`    | `OTEL_EXPORTER_OTLP_ENDPOINT`   | `http://localhost:4318`  |
 | `instrumentations`| —                               | http, aws-sdk, pg        |
 | `instrumentationConfig` | —                         | upstream defaults        |
+| `redact`          | —                               | off                      |
 | `xrayPropagation` | —                               | `false`                  |
 | `views` / `defaultViews` | —                        | built-in histogram views |
 | `telemetryMetrics`| —                               | `false`                  |
@@ -394,6 +395,8 @@ The same applies to `serverless-http`, Powertools' `injectLambdaContext`, etc.
 
 ## Controlling what gets captured
 
+Two layers, both additive and off unless you set them.
+
 ### Per-instrumentation options (`instrumentationConfig`)
 
 Each key takes the upstream instrumentation's own config object — every hook,
@@ -436,6 +439,29 @@ initObservability({
 
 Register extra instrumentations in a preload (so they patch before the library
 loads) and, if you bundle with esbuild, add them to the externalized list.
+
+### Attribute redaction (`redact`)
+
+Instrumentation hooks are per library, and some attributes are unconditional
+(`pg` always sets `db.query.text`). `redact` runs at the **export boundary** —
+one matcher over every span, span event, span link and forwarded log record,
+whatever produced it:
+
+```ts
+initObservability({
+  redact: {
+    dropAttributes: ['db.query.text', 'http.request.header.*', '*.password'],
+    attribute: (key, value, { signal, name }) =>
+      key === 'url.full' ? String(value).split('?')[0] : value, // return undefined to drop
+  },
+});
+```
+
+`dropAttributes` takes exact keys or `*` wildcards and runs first; `attribute`
+sees everything that survives. Attributes are edited in place, so every
+exporter downstream sees the redacted view. A custom `logRecordProcessor`
+bypasses the log half — wrap your own exporter with `RedactingLogRecordExporter`
+in that case.
 
 ## Logs (trace correlation + optional forwarding)
 
@@ -694,6 +720,7 @@ alternative is [otel-desktop-viewer](https://github.com/CtrlSpice/otel-desktop-v
 | `flush abandoned after Nms` warnings | Endpoint slower than `flushTimeoutMs` / remaining time | Lower `OTEL_EXPORTER_OTLP_TIMEOUT`, raise `flushTimeoutMs`, or use a sidecar |
 | p50/p99 of `faas.invoke_duration` look flat on Grafana/Prometheus | Custom histogram recorded in seconds against default ms buckets | Built-in `faas.*` histograms already have seconds buckets; add a View for your own (see *Custom metrics API*) |
 | Traces not joined to X-Ray / API Gateway active tracing | `xrayPropagation` off or peer missing | `initObservability({ xrayPropagation: true })` + install `@opentelemetry/propagator-aws-xray` |
+| SQL text / auth headers showing up in a vendor UI | Instrumentation sets them by default | `redact.dropAttributes: ['db.query.text', 'http.request.header.*']`, or per-library options via `instrumentationConfig` |
 
 Set `OTEL_DEBUG=true` (with the `register` preload) or the standard
 `OTEL_LOG_LEVEL=debug` to get the OTel diagnostic logger; it prints every export

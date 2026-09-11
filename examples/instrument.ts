@@ -24,6 +24,8 @@ initObservability({
   // Set logs:true to also forward log records over OTLP to the collector.
   // Leave it off to keep logs in CloudWatch and just correlate by trace_id.
   // logs: true,
+  // Keep SQL text and auth headers out of every span, whatever emitted them.
+  redact: { dropAttributes: ['db.query.text', 'http.request.header.*'] },
   instrumentations: [
     ...defaultInstrumentations({
       // http + aws-sdk + pg with their upstream options, plus opt-in koa.

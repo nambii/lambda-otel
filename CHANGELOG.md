@@ -9,6 +9,10 @@ Capture controls (all opt-in):
   disables one, `koa` is opt-in (optional peer
   `@opentelemetry/instrumentation-koa`). `defaultInstrumentations(map)` takes
   the same map.
+- **`redact`**: attribute redaction at the export boundary — `dropAttributes`
+  patterns and an `attribute(key, value, ctx)` transform — applied to span,
+  event, link and forwarded log-record attributes. `RedactingSpanExporter` /
+  `RedactingLogRecordExporter` exported for custom pipelines.
 
 Behavior changes (minor bump; all defaults are on):
 

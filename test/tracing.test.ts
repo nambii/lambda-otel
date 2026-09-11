@@ -8,7 +8,7 @@ import {
   type SpanProcessor,
 } from '@opentelemetry/sdk-trace-base';
 import { diag, type DiagLogger } from '@opentelemetry/api';
-import { initObservability, withObservability, parseResourceAttributesEnv, trace } from '../src/index';
+import { initObservability, withObservability, parseResourceAttributesEnv, buildResource, trace } from '../src/index';
 
 // Own process, own init: resource attributes come from env + config here.
 process.env.OTEL_RESOURCE_ATTRIBUTES = 'team=payments,cost.center=cc%2D42,service.name=from-env,bad,=nokey';
@@ -113,4 +113,44 @@ test('a second initObservability call with config warns and is ignored; an empty
 
   initObservability();
   assert.equal(warnings.length, 1);
+});
+
+test('resource: Lambda env is a fallback, never an override, for service.name / service.version', () => {
+  const saved = { ...process.env };
+  process.env.AWS_LAMBDA_FUNCTION_NAME = 'my-fn';
+  process.env.AWS_LAMBDA_FUNCTION_VERSION = '$LATEST';
+  process.env.OTEL_RESOURCE_ATTRIBUTES = 'service.name=from-env,service.version=9';
+  delete process.env.OTEL_SERVICE_NAME;
+  try {
+    const attrs = (r: unknown) => (r as { attributes: Record<string, unknown> }).attributes;
+
+    // OTEL_RESOURCE_ATTRIBUTES beats the Lambda function name (spec order)
+    let a = attrs(buildResource({}));
+    assert.equal(a['service.name'], 'from-env');
+    assert.equal(a['service.version'], '9');
+    assert.equal(a['faas.name'], 'my-fn'); // faas.* still describes the function
+
+    // code resourceAttributes beat env
+    a = attrs(buildResource({ resourceAttributes: { 'service.name': 'from-code' } }));
+    assert.equal(a['service.name'], 'from-code');
+
+    // explicit config / OTEL_SERVICE_NAME beat everything
+    a = attrs(buildResource({ serviceName: 'explicit', serviceVersion: '1.2.3' }));
+    assert.equal(a['service.name'], 'explicit');
+    assert.equal(a['service.version'], '1.2.3');
+    process.env.OTEL_SERVICE_NAME = 'svc-env';
+    assert.equal(attrs(buildResource({}))['service.name'], 'svc-env');
+
+    // nothing set anywhere: Lambda name, then the placeholder
+    delete process.env.OTEL_SERVICE_NAME;
+    delete process.env.OTEL_RESOURCE_ATTRIBUTES;
+    assert.equal(attrs(buildResource({}))['service.name'], 'my-fn');
+    delete process.env.AWS_LAMBDA_FUNCTION_NAME;
+    assert.equal(attrs(buildResource({}))['service.name'], 'unknown-service');
+    // cloud.* cannot be overridden
+    assert.equal(attrs(buildResource({ resourceAttributes: { 'cloud.platform': 'nope' } }))['cloud.platform'], 'aws_lambda');
+  } finally {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+    Object.assign(process.env, saved);
+  }
 });

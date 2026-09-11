@@ -32,8 +32,10 @@ Behavior changes (minor bump; all defaults are on):
   sampling, a second exporter, baggage-to-attributes or tail sampling without
   bypassing `initObservability`.
 - **`OTEL_RESOURCE_ATTRIBUTES` honored** (it was ignored), plus a
-  `resourceAttributes` config option. Precedence: env < code < the package's
-  own `service.name` / cloud attributes.
+  `resourceAttributes` config option. Precedence, highest first: explicit
+  config → `OTEL_SERVICE_NAME` / `DEPLOYMENT_ENV` → `resourceAttributes` →
+  `OTEL_RESOURCE_ATTRIBUTES` → Lambda function name/version. `cloud.*` is
+  always the package's.
 - **OTLP exporter timeout defaults to 3 s** (`exporterTimeoutMillis`) instead
   of OTel's 10 s, so a dead endpoint fails inside the flush cap. Standard
   `OTEL_EXPORTER_OTLP[_<SIGNAL>]_TIMEOUT` env vars still take precedence.

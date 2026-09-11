@@ -33,34 +33,46 @@ export function parseResourceAttributesEnv(raw: string | undefined): ResourceAtt
   return out;
 }
 
+/**
+ * Precedence, highest first:
+ *   1. explicit config (`serviceName`, `serviceVersion`, `environment`)
+ *   2. the dedicated env vars (`OTEL_SERVICE_NAME`, `DEPLOYMENT_ENV`)
+ *   3. `resourceAttributes` from code
+ *   4. `OTEL_RESOURCE_ATTRIBUTES`
+ *   5. Lambda-derived defaults (function name/version, region, memory)
+ * Lambda always sets AWS_LAMBDA_FUNCTION_NAME/VERSION, so they must be the
+ * fallback, never an override — otherwise a `service.name` set through
+ * OTEL_RESOURCE_ATTRIBUTES (as the spec allows) would be clobbered.
+ * `cloud.provider` / `cloud.platform` are always the package's.
+ */
 export function buildResource(config: ObservabilityConfig) {
-  const attrs: ResourceAttrs = {
-    // Lowest precedence: user-supplied attributes from env, then from code.
+  const user: ResourceAttrs = {
     ...parseResourceAttributesEnv(process.env.OTEL_RESOURCE_ATTRIBUTES),
     ...(config.resourceAttributes ?? {}),
-    // Then the package's own identity attributes, which explicit config drives.
-    'service.name':
-      config.serviceName ??
-      process.env.OTEL_SERVICE_NAME ??
-      process.env.AWS_LAMBDA_FUNCTION_NAME ??
-      'unknown-service',
-    'cloud.provider': 'aws',
-    'cloud.platform': 'aws_lambda',
   };
-
   const memMb = process.env.AWS_LAMBDA_FUNCTION_MEMORY_SIZE;
-  const optional: Record<string, string | number | undefined> = {
-    'service.version': config.serviceVersion ?? process.env.AWS_LAMBDA_FUNCTION_VERSION,
-    'deployment.environment.name': config.environment ?? process.env.DEPLOYMENT_ENV,
+  const lambdaDefaults: Record<string, string | number | undefined> = {
+    'service.name': process.env.AWS_LAMBDA_FUNCTION_NAME,
+    'service.version': process.env.AWS_LAMBDA_FUNCTION_VERSION,
     'faas.name': process.env.AWS_LAMBDA_FUNCTION_NAME,
     'faas.version': process.env.AWS_LAMBDA_FUNCTION_VERSION,
     // Semconv: faas.max_memory is in bytes; the Lambda env var is in MB.
     'faas.max_memory': memMb ? Number(memMb) * 1024 * 1024 : undefined,
     'cloud.region': process.env.AWS_REGION,
   };
-  for (const [k, v] of Object.entries(optional)) {
-    if (v != null) attrs[k] = v;
-  }
+  const explicit: Record<string, string | undefined> = {
+    'service.name': config.serviceName ?? process.env.OTEL_SERVICE_NAME,
+    'service.version': config.serviceVersion,
+    'deployment.environment.name': config.environment ?? process.env.DEPLOYMENT_ENV,
+  };
+
+  const attrs: ResourceAttrs = {};
+  for (const [k, v] of Object.entries(lambdaDefaults)) if (v != null) attrs[k] = v;
+  Object.assign(attrs, user);
+  for (const [k, v] of Object.entries(explicit)) if (v != null) attrs[k] = v;
+  attrs['service.name'] ??= 'unknown-service';
+  attrs['cloud.provider'] = 'aws';
+  attrs['cloud.platform'] = 'aws_lambda';
 
   const r = resources as unknown as {
     resourceFromAttributes?: (a: ResourceAttrs) => unknown;

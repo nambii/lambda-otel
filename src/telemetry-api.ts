@@ -8,8 +8,9 @@ import { metrics } from './metrics';
  * Registers an *internal* Lambda extension from within the Node process, stands
  * up a local HTTP listener, subscribes to the `platform` telemetry stream, and
  * translates each `platform.report` into OTel metrics that the handler cannot
- * measure itself: max memory used, billed duration, SnapStart restore duration,
- * and timeouts.
+ * measure itself: max memory used, billed duration, and SnapStart restore
+ * duration. Timeouts are counted by the handler wrapper (which sees them before
+ * the sandbox dies), not here, so the metric is never doubled.
  *
  * Caveats (see README — this is why the Collector layer is the recommended
  * production path):
@@ -90,10 +91,6 @@ export function ingestTelemetryEvent(event: unknown): void {
     // AWS-specific but the key cost signal.
     if (typeof m.billedDurationMs === 'number') {
       metrics.record('aws.lambda.billed_duration', m.billedDurationMs / 1000);
-    }
-    // Spec metric: faas.timeouts.
-    if (e.record?.status === 'timeout') {
-      metrics.count('faas.timeouts', 1);
     }
   } else if (e.type === 'platform.restoreReport') {
     if (typeof m.restoreDurationMs === 'number') {

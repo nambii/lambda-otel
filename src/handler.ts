@@ -1,3 +1,4 @@
+import { performance } from 'node:perf_hooks';
 import {
   context,
   diag,
@@ -12,8 +13,19 @@ import { detectTrigger, lambdaContextAttributes } from './triggers';
 
 const TRACER_NAME = 'lambda-otel';
 
+/** Fire the timeout handler this many ms before the Lambda deadline. */
+const DEFAULT_TIMEOUT_MARGIN_MS = 500;
+
 // Module scope persists across warm invocations in the same sandbox.
 let isColdStart = true;
+
+/** The subset of the Lambda context the wrapper reads. `any`-compatible on purpose. */
+export interface LambdaContextLike {
+  awsRequestId?: string;
+  invokedFunctionArn?: string;
+  functionVersion?: string;
+  getRemainingTimeInMillis?: () => number;
+}
 
 type LambdaHandler<E, R> = (event: E, lambdaContext: any) => Promise<R>;
 
@@ -46,12 +58,22 @@ export interface WrapOptions {
   requestHook?: RequestHook;
   /** Called before the handler returns or after it throws. Errors are swallowed. */
   responseHook?: ResponseHook;
+  /**
+   * How many ms before the Lambda deadline to give up on the handler: the root
+   * span is ended with an ERROR status and `error.type=timeout`, `faas.timeouts`
+   * and `faas.errors` are counted, and everything is flushed — so the invocation
+   * you most need to see is not lost when the runtime kills the sandbox. The
+   * handler itself keeps running; if it finishes inside the margin its result
+   * is still returned. Set `false` to disable. Default 500.
+   */
+  timeoutMarginMs?: number | false;
 }
 
 /**
  * Wraps a Lambda handler with a root span, inbound context propagation,
  * trigger-aware semantic attributes + batch span links, cold-start + duration +
- * error metrics, and a guaranteed flush of all signals before the sandbox freezes.
+ * error metrics, timeout capture, and a guaranteed flush of all signals before
+ * the sandbox freezes.
  */
 export function withObservability<E = any, R = any>(
   handler: LambdaHandler<E, R>,
@@ -60,7 +82,7 @@ export function withObservability<E = any, R = any>(
   return async (event: E, lambdaContext: any): Promise<R> => {
     const coldStart = isColdStart;
     isColdStart = false;
-    const startedAt = Date.now();
+    const startedAt = performance.now();
 
     const enrich = opts.experimentalAttributes !== false;
     const trigger = detectTrigger(event);
@@ -88,6 +110,43 @@ export function withObservability<E = any, R = any>(
         spanName,
         { kind: trigger.kind, links: enrich ? trigger.links : [] },
         async (span) => {
+          let ended = false;
+          let timedOut = false;
+          const endSpan = () => {
+            if (ended) return;
+            ended = true;
+            span.end();
+          };
+          const recordDuration = () =>
+            // Semconv: faas.invoke_duration is a histogram measured in seconds.
+            metrics.record('faas.invoke_duration', (performance.now() - startedAt) / 1000, {
+              'faas.coldstart': coldStart,
+            });
+
+          // ---- timeout capture ----
+          const margin = opts.timeoutMarginMs === false ? 0 : (opts.timeoutMarginMs ?? DEFAULT_TIMEOUT_MARGIN_MS);
+          const remaining = remainingMs(lambdaContext);
+          let timer: NodeJS.Timeout | undefined;
+          if (margin > 0 && remaining !== undefined && remaining > margin) {
+            timer = setTimeout(() => {
+              timedOut = true;
+              span.addEvent('lambda.timeout_imminent', { 'faas.timeout_margin_ms': margin });
+              span.setAttribute('error.type', 'timeout');
+              span.setStatus({
+                code: SpanStatusCode.ERROR,
+                message: `Lambda timeout imminent (${remaining}ms budget, ${margin}ms margin)`,
+              });
+              metrics.count('faas.timeouts', 1);
+              metrics.count('faas.errors', 1, { 'faas.coldstart': coldStart, 'error.type': 'timeout' });
+              recordDuration();
+              endSpan();
+              // Fire and forget: whatever ships inside the margin is what survives.
+              void flush();
+            }, remaining - margin);
+            // The timer must never keep a finished invocation alive.
+            timer.unref?.();
+          }
+
           span.setAttribute('faas.coldstart', coldStart);
           if (lambdaContext?.awsRequestId) {
             span.setAttribute('faas.invocation_id', lambdaContext.awsRequestId);
@@ -100,23 +159,25 @@ export function withObservability<E = any, R = any>(
           try {
             const result = await handler(event, lambdaContext);
             runHook(opts.responseHook, span, { res: result });
-            span.setStatus({ code: SpanStatusCode.OK });
+            if (!timedOut) span.setStatus({ code: SpanStatusCode.OK });
             return result;
           } catch (err: any) {
             runHook(opts.responseHook, span, { err });
-            span.recordException(err);
-            span.setStatus({
-              code: SpanStatusCode.ERROR,
-              message: err?.message,
-            });
-            metrics.count('faas.errors', 1, { 'faas.coldstart': coldStart });
+            if (!timedOut) {
+              span.recordException(err);
+              span.setStatus({
+                code: SpanStatusCode.ERROR,
+                message: err?.message,
+              });
+              metrics.count('faas.errors', 1, { 'faas.coldstart': coldStart });
+            }
             throw err;
           } finally {
-            // Semconv: faas.invoke_duration is a histogram measured in seconds.
-            metrics.record('faas.invoke_duration', (Date.now() - startedAt) / 1000, {
-              'faas.coldstart': coldStart,
-            });
-            span.end();
+            if (timer) clearTimeout(timer);
+            if (!timedOut) {
+              recordDuration();
+              endSpan();
+            }
             // The critical Lambda step: ship everything before the runtime freezes.
             await flush();
           }
@@ -124,6 +185,16 @@ export function withObservability<E = any, R = any>(
       ),
     );
   };
+}
+
+function remainingMs(lambdaContext: LambdaContextLike | undefined): number | undefined {
+  if (typeof lambdaContext?.getRemainingTimeInMillis !== 'function') return undefined;
+  try {
+    const ms = lambdaContext.getRemainingTimeInMillis();
+    return typeof ms === 'number' && Number.isFinite(ms) ? ms : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 // A user hook must never break the handler — capture is best-effort.

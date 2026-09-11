@@ -29,6 +29,18 @@ initObservability({
   logRecordProcessor: new SimpleLogRecordProcessor(logExporter),
 });
 
+/** A Lambda context with a live deadline, like the runtime provides. */
+function ctx(overrides: Record<string, unknown> = {}, budgetMs = 30_000) {
+  const deadline = Date.now() + budgetMs;
+  return {
+    awsRequestId: 'req',
+    getRemainingTimeInMillis: () => deadline - Date.now(),
+    ...overrides,
+  };
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 beforeEach(() => {
   spanExporter.reset();
   metricExporter.reset();
@@ -102,6 +114,42 @@ test('errors are recorded on the span and rethrown', async () => {
   assert.equal(span.status.code, SpanStatusCode.ERROR);
   assert.ok(span.events.some((e) => e.name === 'exception'));
   assert.equal(metricSum('faas.errors'), 1);
+});
+
+test('imminent timeout ends the span as an error and counts faas.timeouts before the deadline', async () => {
+  // 200ms budget, 150ms margin: the timeout handler fires at ~50ms while the
+  // handler is still sleeping.
+  const handler = withObservability(
+    async () => {
+      await sleep(120);
+      return 'late';
+    },
+    { timeoutMarginMs: 150 },
+  );
+  const result = await handler({ headers: {} }, ctx({ awsRequestId: 'req-timeout' }, 200));
+
+  assert.equal(result, 'late'); // the handler's own result still comes back
+  const finished = spans();
+  assert.equal(finished.length, 1);
+  const span = finished[0];
+  assert.equal(span.status.code, SpanStatusCode.ERROR);
+  assert.equal(span.attributes['error.type'], 'timeout');
+  assert.ok(span.events.some((e) => e.name === 'lambda.timeout_imminent'));
+  // Ended by the timer, well before the handler finished.
+  const endedAfterMs = (span.endTime[0] - span.startTime[0]) * 1e3 + (span.endTime[1] - span.startTime[1]) / 1e6;
+  assert.ok(endedAfterMs < 110, `span ended after ${endedAfterMs}ms`);
+  assert.equal(metricSum('faas.timeouts'), 1);
+  assert.equal(metricSum('faas.errors'), 1);
+});
+
+test('timeout capture is skipped when the handler finishes in time or is disabled', async () => {
+  await withObservability(async () => 'quick', { timeoutMarginMs: 50 })({ headers: {} }, ctx({}, 5000));
+  await withObservability(async () => {
+    await sleep(60);
+    return 'slow-but-off';
+  }, { timeoutMarginMs: false })({ headers: {} }, ctx({}, 80));
+  for (const s of spans()) assert.notEqual(s.status.code, SpanStatusCode.ERROR);
+  assert.equal(metricSum('faas.timeouts'), undefined);
 });
 
 test('inbound trace context is propagated into the root span', async () => {
@@ -241,7 +289,8 @@ test('platform.report telemetry is translated into platform metrics', async () =
   assert.ok(hasMetric('faas.mem_usage'));
   assert.ok(hasMetric('aws.lambda.billed_duration'));
   assert.ok(hasMetric('aws.lambda.restore_duration'));
-  assert.equal(metricSum('faas.timeouts'), 1);
+  // Timeouts are the wrapper's job (it sees them before the sandbox dies).
+  assert.equal(metricSum('faas.timeouts'), undefined);
 });
 
 test('log records are forwarded and carry the active trace context', async () => {

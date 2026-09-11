@@ -4,6 +4,7 @@ export {
   type WrapOptions,
   type RequestHook,
   type ResponseHook,
+  type LambdaContextLike,
 } from './handler';
 export { detectTrigger, type TriggerInfo, type FaasTriggerType } from './triggers';
 export {
